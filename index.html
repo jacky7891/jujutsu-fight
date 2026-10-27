@@ -154,7 +154,8 @@
         <div class="nettip">
           创建者＝玩家 1（P1：<b>A/D</b> 移动 · <b>W</b> 跳 · <b>S</b> 防御 · <b>J</b> 拳 · <b>空格</b> 闪避 · <b>Q/E/F/G·R</b> 术式）<br>
           加入者＝玩家 2（P2：方向键 · <b>0</b> 拳 · <b>/</b> 闪避 · <b>1/2/3/4·5</b> 术式）<br>
-          需要联网；双方浏览器直连，延迟取决于各自网络
+          不在同一个网络也能玩：先尝试双方浏览器直连（延迟最低）；
+          直连打不通（手机流量 / 公司网 / 对称 NAT）会自动改用服务器中转，只是延迟略高
         </div>
       </div>
     </div>
@@ -255,6 +256,20 @@ const DOMAIN_CLOSE = 26;  // 收束
 const AIAI_HOLD    = 900; // 真赝相爱的维持时间（15 秒，够吃满 3 次术式自动填充）
 function domainHold(d){ return (d && d.kind==='aiai')? AIAI_HOLD : DOMAIN_HOLD; }
 let domain = null;
+let clash   = null;          // 领域对拼（双方领域同时展开 → 咒力的硬度之争）
+let clashTaps = [0, 0];      // 点屏幕累计的点击数（手机用）
+const CLASH_DUR   = 300;     // 对拼时长：5 秒
+const CLASH_GAIN  = 0.052;   // 每次点击注入的咒力（约 20 次填满）
+const CLASH_DECAY = 0.0016;  // 咒力自然流失（每秒约 0.1）
+const CLASH_DMG   = 75;      // 领域被碾碎的反噬伤害
+function domainName(k){
+  return k==='void'? '無 量 空 処' : k==='shrine'? '伏 魔 御 厨 子'
+       : k==='nameless'? '无 名 领 域' : k==='aiai'? '真 赝 相 爱' : '领 域';
+}
+function domainColor(k){
+  return k==='void'? '#c9a24a' : k==='shrine'? '#ff5060'
+       : k==='nameless'? '#ff7a5a' : k==='aiai'? '#7fd0ff' : '#cbb9ff';
+}
 const VOID_STARS = [];
 for(let i=0;i<260;i++) VOID_STARS.push({x:Math.random(), y:Math.random(), r:Math.random()*1.5+0.4, p:Math.random()*6.283});
 const VOID_GLYPHS = ['無','量','空','処','呪','術','式','眼','∞','虚'];
@@ -440,7 +455,7 @@ function resetRound(){
   players = [makePlayer(0, picks[0]), makePlayer(1, picks[1])];
   players[0].wins = w0; players[1].wins = w1;
   orbs = []; particles = []; beams = []; fusions = []; announcements = []; ghosts = [];
-  slashes = []; fireZones = [];
+  slashes = []; fireZones = []; dmgNums = []; clash = null;
   shake = 0; slowmo = 1; flash = 0; camX = 0; zoom = 1; domain = null;
   bfFx = 0; bfStop = 0; bfSlow = 0;
   aiReset(); syncPadKeys();
@@ -465,6 +480,30 @@ function ring(x,y,color,maxR=120,width=6,speed=0.25){
 }
 
 /* ================= 伤害 ================= */
+/* 伤害跳字：多段打击时逐个飘出（纯爱大炮命中时的 30 30 30 就是它） */
+let dmgNums = [];
+function showDmg(x, y, txt, col, size){
+  dmgNums.push({ x, y, vx:rand(-0.9,0.9), vy:rand(-2.7,-1.7), txt:String(txt),
+                 col:col||'#ffffff', life:52, max:52, size:size||17 });
+  netFx([3, Math.round(x), Math.round(y), String(txt), col||'#ffffff', size||17]);   // 联机：同步跳字
+}
+function drawDmgNums(){
+  for(let i=dmgNums.length-1;i>=0;i--){
+    const n = dmgNums[i];
+    n.x += n.vx; n.y += n.vy; n.vy *= 0.94;
+    if(--n.life <= 0){ dmgNums.splice(i,1); continue; }
+    const kk = n.life/n.max;
+    ctx.globalAlpha = Math.min(1, kk*2.4);
+    ctx.font = 'bold ' + n.size + 'px Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.strokeStyle = 'rgba(20,10,40,0.6)'; ctx.lineWidth = 3;
+    ctx.strokeText(n.txt, n.x, n.y);
+    ctx.fillStyle = n.col;
+    ctx.fillText(n.txt, n.x, n.y);
+    ctx.globalAlpha = 1; ctx.textAlign = 'left';
+  }
+  if(dmgNums.length > 60) dmgNums.splice(0, dmgNums.length - 60);
+}
 function damage(att, def, dmg, kb, kbY, stun, type){
   if(def.hp<=0) return;
   if(def.invul>0 && type!=='cleave') return;      // 捌 的刀光无视无敌
@@ -973,8 +1012,10 @@ function trySkillsGojo(p, k, K){
   else if(K.s4P){
     consS(k,4);
     if(p.energy>=100 && p.cd.domain<=0 && p.onGround && state==='fight'){
-      p.state='domain'; p.stateT=0; p.energy=0; p.cd.domain=900;
-      domain = { owner:p.id, kind:'void', phase:0, t:0 };
+      if(!startDomainClash(p, 'void', 'domain', 900)){        // 对手也在展开 → 进入领域对拼
+        p.state='domain'; p.stateT=0; p.energy=0; p.cd.domain=900;
+        domain = { owner:p.id, kind:'void', phase:0, t:0 };
+      }
     }
     else if(p.energy<100) announce('咒 力 不 足 !', 30, '#ff8090');
     else if(p.cd.domain>0) announce('领 域 尚 未 恢 复', 30, '#ffd24a');
@@ -1007,8 +1048,10 @@ function trySkillsSukuna(p, k, K){
   else if(K.s4P){
     consS(k,4);
     if(p.energy>=100 && p.cd.shrine<=0 && p.onGround && state==='fight'){
-      p.state='domain'; p.stateT=0; p.energy=0; p.cd.shrine=900;
-      domain = { owner:p.id, kind:'shrine', phase:0, t:0, tick:0 };
+      if(!startDomainClash(p, 'shrine', 'shrine', 900)){
+        p.state='domain'; p.stateT=0; p.energy=0; p.cd.shrine=900;
+        domain = { owner:p.id, kind:'shrine', phase:0, t:0, tick:0 };
+      }
     }
     else if(p.energy<100) announce('咒 力 不 足 !', 30, '#ff8090');
     else if(p.cd.shrine>0) announce('伏 魔 尚 未 恢 复', 30, '#ffd24a');
@@ -1037,8 +1080,10 @@ function trySkillsYuji(p, k, K){
   else if(K.s4P){
     consS(k,4);
     if(p.energy>=100 && p.cd.domain<=0 && p.onGround && state==='fight'){
-      p.state='domain'; p.stateT=0; p.energy=0; p.cd.domain=900;
-      domain = { owner:p.id, kind:'nameless', phase:0, t:0 };
+      if(!startDomainClash(p, 'nameless', 'domain', 900)){
+        p.state='domain'; p.stateT=0; p.energy=0; p.cd.domain=900;
+        domain = { owner:p.id, kind:'nameless', phase:0, t:0 };
+      }
     }
     else if(p.energy<100) announce('咒 力 不 足 !', 30, '#ff8090');
     else if(p.cd.domain>0) announce('领 域 尚 未 恢 复', 30, '#ffd24a');
@@ -1153,10 +1198,12 @@ function trySkillsYuta(p, k, K){
     consS(k,4);
     if(inAiAi(p)) castCannon(p);                       // 领域内再按一次 → 纯爱大炮
     else if(p.energy>=100 && p.cd.domain<=0 && p.onGround && state==='fight'){
-      p.state='domain'; p.stateT=0; p.energy=0;
-      p.cd.domain = AIAI_HOLD + 420;                        // 领域收束后仍需等待一段冷却
-      domain = { owner:p.id, kind:'aiai', phase:0, t:0 };
-      announce('领域展开 · 真 赝 相 爱', 90, '#a8d8ff', '插满刀剑的废墟在脚下铺开——模仿者的速度，翻倍。');
+      if(!startDomainClash(p, 'aiai', 'domain', AIAI_HOLD + 420)){
+        p.state='domain'; p.stateT=0; p.energy=0;
+        p.cd.domain = AIAI_HOLD + 420;                        // 领域收束后仍需等待一段冷却
+        domain = { owner:p.id, kind:'aiai', phase:0, t:0 };
+        announce('领域展开 · 真 赝 相 爱', 90, '#a8d8ff', '插满刀剑的废墟在脚下铺开——模仿者的速度，翻倍。');
+      }
     }
     else if(p.energy<100) announce('咒 力 不 足 !', 30, '#ff8090');
     else if(p.cd.domain>0) announce('领 域 尚 未 恢 复', 30, '#ffd24a');
@@ -1177,7 +1224,7 @@ const CANNON_SHOTS = 16;  // 段数；伤害逐段递增（1 → 6），合计�
 function castCannon(p){
   p.state='cannonFire'; p.stateT=0; p.cannonHits=0;
   if(domain) domain.firing = true;                     // 领域支撑到炮打完再碎裂
-  announce('终结技 · 纯 爱 大 炮', 110, '#c8a0ff', '「伏太，交给我。」——「我们可是纯爱。」');
+  announce('终结技 · 纯 爱 大 炮', 70, '#c8a0ff', '「忧太，交给我。」');
   flash = Math.max(flash, 0.35);
   shake = Math.max(shake, 6);
   ring(p.x - p.facing*34, p.y-p.h*0.62, '#c8a0ff', 130, 6);
@@ -1647,7 +1694,8 @@ function updatePlayer(p, foe, k){
     if(T<CANNON_OPEN){                                   // 起手：咒力向里香汇聚
       shake = Math.max(shake, 1.5 + T*0.42);
       if(T%2===0) spawnParticles(mx, my, 3, '#d9c4ff', 2.5, 14, 3, 0.02);
-      if(T===CANNON_OPEN-1){ ring(mx, my, '#d9c4ff', 130, 5); flash = Math.max(flash, 0.28); }
+      if(T===CANNON_OPEN-1){ ring(mx, my, '#d9c4ff', 130, 5); flash = Math.max(flash, 0.28);
+        announce('纯 爱 大 炮', 110, '#e2c8ff', '「我们可是纯爱。」'); }
     } else if(T<CANNON_LEN-CANNON_END){                  // 持续迸发：光柱越张越粗、越来猛
       shake = Math.max(shake, 3 + blast*9);
       if(T%2===0){
@@ -1660,6 +1708,8 @@ function updatePlayer(p, foe, k){
         const dmg = 1 + Math.round(p.cannonHits*0.35);   // 越到后面越疼
         p.cannonHits++;
         const hy = foe.y - foe.h*0.55;
+        showDmg(foe.x + rand(-28,28), hy + rand(-36,8), dmg,
+                Math.random()<0.3? '#ffd24a' : '#ffffff', 15 + blast*8);   // 30 30 30 式跳字
         damage(p, foe, dmg, p.facing*(0.8 + blast*2.2), 1.5, 14, 'cannon');
         /* —— 打击感：顿帧 + 白闪 + 震屏峰值 + 双层冲击环 + 迸溅 + 光柱被顶得胀一下 —— */
         hitStop = 2 + Math.round(blast*2);   // 多段攻击：直接覆盖 damage 的默认 6 帧，避免每段都顿太久
@@ -3025,88 +3075,94 @@ function drawBeams(t, tick){
         ctx.beginPath(); ctx.ellipse(px2, b.y, 6, b.h*0.9, 0, 0, 7); ctx.stroke();
       }
     } else if(b.type==='cannon'){
-      /* 纯爱大炮：等宽的浅紫「能量柱」——柱身有流动的能量节与跳动的电弧 */
+      /* 纯爱大炮：一束「光纤丝」——十几条细光线从里香掌心炸出，越远越张开、丝带般弯曲飘动 */
+      ctx.globalCompositeOperation = 'lighter';                // 发光叠加：丝叠丝越叠越亮
       const bx = b.x, by = b.y, d2 = b.dir;
       let ex = (typeof b.tx === 'number')? b.tx : bx + d2*1200;
       if(Math.abs(ex-bx) < 60) ex = bx + d2*300;
       const k    = clamp(1 - b.life/b.max, 0, 1);
-      const grow = Math.min(1, k/0.62);                        // 前 62% 时长一路变粗
+      const grow = Math.min(1, k/0.62);                        // 前 62% 时长一路张开
       const fade = k>0.86? clamp(1-(k-0.86)/0.14, 0, 1) : 1;   // 末尾收束
-      const pu   = b.pulse || 0;                               // 命中冲击：整根柱子胀一下
-      const len  = Math.abs(ex-bx);
-      const R    = (46 + grow*34) * fade * (1 + pu*0.15);      // 柱半径（近端到远端等宽）
-      const SEG  = 16;
-      const wobAt = (u)=> 1 + Math.sin(u*7.5 + t*0.35)*0.075;  // 柱面沿长度的涌动
-      const colPath = (rMul)=>{                                // 柱体轮廓（上下边缘带涌动）
+      const pu   = b.pulse || 0;                               // 命中冲击：整束胀一下
+      const R1   = (7 + grow*7) * fade;                        // 炮口半高
+      const R2   = (64 + grow*52) * fade * (1 + pu*0.16);      // 远端半高（锥形张开）
+      /* 整束的紫色辉光（锥形底层） */
+      ctx.beginPath();
+      ctx.moveTo(bx, by - R1*1.9); ctx.lineTo(ex, by - R2*1.7);
+      ctx.lineTo(ex, by + R2*1.7); ctx.lineTo(bx, by + R1*1.9);
+      ctx.closePath();
+      const g0 = ctx.createLinearGradient(bx, 0, ex, 0);
+      g0.addColorStop(0,'rgba(216,190,255,'+(0.30*a*fade)+')');
+      g0.addColorStop(0.5,'rgba(190,155,255,'+(0.22*a*fade)+')');
+      g0.addColorStop(1,'rgba(150,110,255,'+(0.10*a*fade)+')');
+      ctx.fillStyle = g0; ctx.fill();
+      /* 中心亮带：几条核心丝合成的白炽光带（参考图里束心最亮） */
+      ctx.beginPath();
+      ctx.moveTo(bx, by - R1*0.75); ctx.lineTo(ex, by - R2*0.34);
+      ctx.lineTo(ex, by + R2*0.34); ctx.lineTo(bx, by + R1*0.75);
+      ctx.closePath();
+      const gc = ctx.createLinearGradient(bx, 0, ex, 0);
+      gc.addColorStop(0,'rgba(255,255,255,'+(0.95*a*fade)+')');
+      gc.addColorStop(0.55,'rgba(246,240,255,'+(0.70*a*fade)+')');
+      gc.addColorStop(1,'rgba(226,210,255,'+(0.42*a*fade)+')');
+      ctx.fillStyle = gc; ctx.fill();
+      /* 二十四条光丝：中心几条笔直白亮，外围散开、弯曲、随风飘动 */
+      const STR = 24;
+      const rnd = (i)=>{ const s = Math.sin(i*127.1 + 311.7)*43758.5453; return s - Math.floor(s); };
+      ctx.lineCap = 'round';
+      for(let i=0;i<STR;i++){
+        const u  = (i/(STR-1))*2 - 1;                            // -1..1（上缘→下缘）
+        const c  = rnd(i);                                       // 每条丝的「个性」
+        const y0 = by + u*R1*(0.55 + c*0.5);
+        const y1 = by + u*R2*(0.82 + c*0.36);
+        const bend = Math.sin(t*0.05 + i*1.9 + c*6.28) * R2*(0.16 + c*0.30) * (u<0? -1 : 1);
+        const flick = 0.75 + 0.25*Math.sin(t*0.4 + i*2.3);       // 亮度呼吸
+        const core = Math.abs(u) < 0.3;
         ctx.beginPath();
-        for(let i=0;i<=SEG;i++){
-          const u=i/SEG, px = bx + (ex-bx)*u, rr = R*rMul*wobAt(u);
-          i? ctx.lineTo(px, by-rr) : ctx.moveTo(px, by-rr);
-        }
-        for(let i=SEG;i>=0;i--){
-          const u=i/SEG, px = bx + (ex-bx)*u, rr = R*rMul*wobAt(u);
-          ctx.lineTo(px, by+rr);
-        }
-        ctx.closePath();
-      };
-      const col = (rMul, c0, c1, alp)=>{
-        colPath(rMul);
-        const g = ctx.createLinearGradient(bx, 0, ex, 0);
-        g.addColorStop(0, c0); g.addColorStop(0.55, c1); g.addColorStop(1,'rgba(178,142,255,0)');
-        ctx.globalAlpha = a*(alp===undefined? 1 : alp); ctx.fillStyle = g; ctx.fill(); ctx.globalAlpha = 1;
-      };
-      col(1.55, 'rgba(226,210,255,0.30)', 'rgba(196,164,255,0.17)');            // 外层能量晕
-      col(1.00, 'rgba(255,255,255,0.92)', 'rgba(212,188,255,0.72)');            // 柱体
-      col(0.40, 'rgba(255,255,255,1)',    'rgba(240,232,255,0.58)');            // 核心
-      if(pu>0.02) col(0.92, 'rgba(255,255,255,'+(0.45*pu)+')', 'rgba(255,255,255,'+(0.26*pu)+')');   // 命中白闪
-      /* 流动的能量节：沿柱身向前推进的一圈圈能量环 */
-      const sp = 56, flow = (t*7) % sp;
-      for(let d=flow; d<len; d+=sp){
-        const px = bx + d2*d, rr = R*wobAt(d/len)*1.02;
-        ctx.globalAlpha = a*0.55;
-        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3.4;
-        ctx.beginPath(); ctx.moveTo(px, by-rr); ctx.lineTo(px, by+rr); ctx.stroke();
-        ctx.globalAlpha = a*0.34; ctx.lineWidth = 2;
-        ctx.strokeStyle = '#d9c4ff';
-        ctx.beginPath(); ctx.ellipse(px, by, 6, rr, 0, 0, 7); ctx.stroke();
-        ctx.globalAlpha = 1;
-      }
-      /* 柱面上下跳动的电弧 */
-      ctx.lineWidth = 1.8;
-      for(let i=0;i<6;i++){
-        const u = 0.08 + 0.84*(((i*0.27) + (t*0.0035) % 1) % 1);
-        const px = bx + d2*len*u, sgn = (i%2? 1 : -1);
-        const rr = R*wobAt(u);
-        let cx = px, cy = by + sgn*rr;
-        ctx.strokeStyle = 'rgba(255,255,255,'+(0.30+0.35*Math.abs(Math.sin(t*0.6+i)))*a+')';
-        ctx.beginPath(); ctx.moveTo(cx, cy);
-        for(let s=0;s<3;s++){ cx += d2*rand(6,18); cy += sgn*rand(3,17); ctx.lineTo(cx, cy); }
+        ctx.moveTo(bx + d2*4, y0);
+        ctx.quadraticCurveTo(bx + (ex-bx)*0.45, (y0+y1)/2 + bend, ex, y1);
+        ctx.strokeStyle = core? 'rgba(255,255,255,'+(0.42*a*flick)+')' : 'rgba(214,190,255,'+(0.30*a*flick)+')';
+        ctx.lineWidth = core? 9 : 6.5;                           // 辉光层
+        ctx.stroke();
+        ctx.strokeStyle = core? 'rgba(255,255,255,'+(0.98*a*flick)+')'
+          : (c>0.6? 'rgba(244,236,255,'+(0.92*a*flick)+')' : 'rgba(212,184,255,'+(0.80*a*flick)+')');
+        ctx.lineWidth = core? 4.2 : 2.2 + c*1.6;                 // 亮线层
         ctx.stroke();
       }
-      /* 远端：齐头的能量截面 + 持续炸开的紫光斑 */
-      const rrE = R*wobAt(1);
-      ctx.globalAlpha = a; ctx.fillStyle = 'rgba(255,255,255,'+(0.85*fade)+')';
-      ctx.beginPath(); ctx.ellipse(ex, by, 9, rrE, 0, 0, 7); ctx.fill();
-      ctx.globalAlpha = a*0.8; ctx.strokeStyle = '#e2d2ff'; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.ellipse(ex, by, 16, rrE*1.12, 0, 0, 7); ctx.stroke(); ctx.globalAlpha = 1;
-      const cr = (40 + grow*95) * fade * (1 + pu*0.35);
+      /* 偶尔一条丝爆亮（扫过整束） */
+      {
+        const i = Math.floor((t*0.02) % STR), u = (i/(STR-1))*2 - 1;
+        ctx.beginPath();
+        ctx.moveTo(bx, by + u*R1);
+        ctx.quadraticCurveTo(bx + (ex-bx)*0.45, by + u*R2*0.55, ex, by + u*R2);
+        ctx.strokeStyle = 'rgba(255,255,255,'+(0.9*a)+')'; ctx.lineWidth = 2.4; ctx.stroke();
+      }
+      /* 远端：炸开的紫白光斑 */
+      const cr = (34 + grow*70) * fade * (1 + pu*0.3);
       if(cr>2){
-        const g2 = ctx.createRadialGradient(ex, by, 4, ex, by, cr);
-        g2.addColorStop(0,'rgba(255,255,255,'+(0.92*fade)+')');
-        g2.addColorStop(0.4,'rgba(216,192,255,'+(0.62*fade)+')');
+        const g2 = ctx.createRadialGradient(ex, by, 3, ex, by, cr);
+        g2.addColorStop(0,'rgba(255,255,255,'+(0.85*fade)+')');
+        g2.addColorStop(0.4,'rgba(214,190,255,'+(0.55*fade)+')');
         g2.addColorStop(1,'rgba(160,120,255,0)');
         ctx.globalAlpha = a; ctx.fillStyle = g2;
-        ctx.beginPath(); ctx.ellipse(ex, by, cr*0.55, cr, 0, 0, 7); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(ex, by, cr*0.5, cr, 0, 0, 7); ctx.fill();
         ctx.globalAlpha = 1;
       }
-      const pr = Math.max(6, (38 + grow*54 + Math.sin(t*0.6)*5) * fade);  // 灯头＝里香
-      const g3 = ctx.createRadialGradient(bx,by,4, bx,by, pr);
+      /* 炮口＝里香：白核 + 两圈旋转的紫环 */
+      const pr = Math.max(7, (26 + grow*22 + Math.sin(t*0.6)*4) * fade);
+      const g3 = ctx.createRadialGradient(bx,by,3, bx,by, pr*1.5);
       g3.addColorStop(0,'rgba(255,255,255,'+(0.98*a)+')');
-      g3.addColorStop(0.45,'rgba(224,208,255,'+(0.75*a)+')');
+      g3.addColorStop(0.45,'rgba(224,208,255,'+(0.7*a)+')');
       g3.addColorStop(1,'rgba(150,110,255,0)');
-      ctx.fillStyle=g3; ctx.beginPath(); ctx.arc(bx,by,pr,0,7); ctx.fill();
-      ctx.strokeStyle='rgba(255,255,255,'+(0.5*a)+')'; ctx.lineWidth=2;
-      ctx.beginPath(); ctx.arc(bx,by, pr*0.62, 0, 7); ctx.stroke();
+      ctx.fillStyle=g3; ctx.beginPath(); ctx.arc(bx,by,pr*1.5,0,7); ctx.fill();
+      for(let i=0;i<2;i++){
+        ctx.strokeStyle = i? 'rgba(214,190,255,'+(0.75*a)+')' : 'rgba(255,255,255,'+(0.6*a)+')';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.ellipse(bx, by, pr*(1.15+i*0.5), pr*(0.5+i*0.25), Math.sin(t*0.05+i*1.4)*0.4, 0, 7);
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = 'source-over';
     } else if(b.type==='ladder'){
       // 雅各布天梯：从天而降的金色光柱
       const w = 74;
@@ -3721,6 +3777,160 @@ function aiAiBackdrop(cx, cy, r, t){
   ctx.restore();
 }
 
+/* ================= 领域对拼 =================
+   双方同时展开领域 → 领域边缘相撞，进入「咒力的硬度之争」：
+   斜上方＝敌方的领域，斜下方＝我方的领域，中间是拔河式的对拼条。
+   电脑：连按 空格（P1）/ ÷（P2）；手机：疯狂点屏幕。                */
+function clashMine(){ return Net.mode==='client'? 1 : 0; }      // 本机操控的是哪一个
+function startDomainClash(p, kind, cdKey, cdVal){
+  const foe = players[1-p.id], d = domain;
+  if(!d || d.owner !== foe.id) return false;              // 对手没有领域在展开
+  if(!(d.phase < 2 || d.t < 60)) return false;            // 对手领域已稳固 → 只能硬吃
+  p.energy = 0; p.cd[cdKey] = cdVal;                      // 咒力照样打空
+  clash = { t:0, dur:CLASH_DUR, prog:[0,0], fx:[0,0], kinds:[null,null] };
+  clash.kinds[foe.id] = d.kind;                           // 已经在展开的那座
+  clash.kinds[p.id]   = kind;                             // 新结印的这座
+  state   = 'clash';
+  domain  = null;                                         // 两股领域互相抵消，只剩对拼
+  orbs.length = 0; fusions.length = 0; slashes.length = 0; fireZones.length = 0;
+  hitStop = 0; flash = 1.15; shake = 15; zoom = 1.12; slowmo = 1;
+  for(const pl of players){ pl.state='idle'; pl.stateT=0; pl.vx=0; pl.vy=0; pl.stun=0;
+    pl.invul = Math.max(pl.invul, 400); }
+  clashTaps[0] = clashTaps[1] = 0;
+  Net.clashTapRemote = 0;
+  announce('领 域 对 拼', 200, '#ffd77a', '两座领域同时落下——咒力的硬度之争！');
+  return true;
+}
+function clashCollect(){
+  const taps = [0,0], mine = clashMine();
+  const km = players[mine].kmap;
+  if(tapOnce(km.dodge) || tapOnce(km.dodge2)) taps[mine]++;        // 键盘：连按闪避键（P1＝空格）
+  taps[mine] += clashTaps[mine]; clashTaps[mine] = 0;              // 手机：点屏幕
+  if(Net.mode === 'host'){ taps[1] += Net.clashTapRemote; Net.clashTapRemote = 0; }   // 联机：客机上送的点击
+  else if(Net.mode === 'client'){ /* 客机不跑战斗，点击已随输入上送 */ }
+  else if(vsCPU){ if(Math.random() < 0.15) taps[1]++; }            // 人机：CPU 自动按空格
+  else { const k2 = players[1].kmap; if(tapOnce(k2.dodge) || tapOnce(k2.dodge2)) taps[1]++; }
+  return taps;
+}
+function updateClash(){
+  const c = clash; if(!c) return;
+  c.t++;
+  const taps = clashCollect();
+  for(let i=0;i<2;i++){
+    c.prog[i] = Math.max(0, c.prog[i] - CLASH_DECAY);              // 先自然流失，再注入（这样才灌得满）
+    if(taps[i] > 0){
+      c.prog[i] = Math.min(1, c.prog[i] + taps[i]*CLASH_GAIN);
+      c.fx[i]   = 8;                                               // 每次注入：卡片爆闪
+      const py  = i===clashMine()? 560 : 200;
+      spawnParticles(camX + (i===clashMine()? W*0.36 : W*0.64), py, 2, domainColor(c.kinds[i]), 5, 16, 3, 0);
+    }
+    c.fx[i] = Math.max(0, c.fx[i]-1);
+  }
+  if(c.t % 4 === 0) spawnParticles(camX + W*0.5 + rand(-260,260), rand(180,540), 1, '#ffd77a', 2, 18, 3, 0);
+  let w = null;
+  if(c.prog[0] >= 1) w = 0;
+  else if(c.prog[1] >= 1) w = 1;
+  else if(c.t >= c.dur) w = Math.abs(c.prog[0]-c.prog[1]) < 0.05? -1 : (c.prog[0] > c.prog[1]? 0 : 1);
+  if(w !== null) clashFinish(w);
+}
+function clashFinish(w){
+  const c = clash; if(!c) return;
+  clash = null;
+  for(const p of players){ p.stun = 0; p.invul = 0; }      // 撤掉对拼期间的无敌：领域破碎的反噬照吃
+  if(w >= 0){                                              // 一方压过另一方：胜者领域落下，败者领域破碎
+    const win = players[w], lose = players[1-w];
+    domain = { owner:w, kind:c.kinds[w], phase:1, t:0 };
+    win.state='idle'; win.stateT=0; win.vx=0;
+    lose.state='hurt'; lose.stateT=0;
+    flash = 1.35; shake = 22; zoom = 1.1;
+    ring(lose.x, lose.y - lose.h*0.55, '#ff8090', 280, 9);
+    spawnParticles(lose.x, lose.y - lose.h*0.55, 46, '#ff8090', 10, 44, 6, 0.2);
+    damage(win, lose, CLASH_DMG, 8, -9, 90, 'clash');      // 领域被碾碎的反噬 + 长时间硬直
+    lose.energy = 0;                                       // 结印被打断：咒力全部散尽
+    announce('领 域 破 碎 !', 140, '#ff8090', domainName(c.kinds[w]) + ' 压碎了对手的领域');
+  } else {                                                 // 势均力敌：两座领域同时崩解
+    domain = null;
+    flash = 1.15; shake = 18; zoom = 1.05;
+    players.forEach(p=>{ p.state='hurt'; p.stateT=0; });
+    damage(players[0], players[1], 34, 6, -8, 60, 'clash');
+    damage(players[1], players[0], 34, 6, -8, 60, 'clash');
+    players.forEach(p=>{ p.energy = 0; });
+    announce('领 域 同 碎', 140, '#ffd77a', '两股咒力同时崩解——谁也没能压制对方');
+  }
+  if(state !== 'ko') state = 'fight';
+}
+/* 对拼画面：斜上＝敌方领域，斜下＝我方领域，中间＝拔河式对拼条 */
+function drawClashCard(cx, cy, rot, kind, label, prog, fx, t){
+  const col = domainColor(kind), w = 600, h = 124;
+  ctx.save();
+  ctx.translate(cx, cy + (fx? rand(-2.5,2.5) : 0));
+  ctx.rotate(rot);
+  ctx.shadowColor = col; ctx.shadowBlur = 16 + fx*7;
+  ctx.fillStyle = 'rgba(8,10,24,0.93)';
+  rr(-w/2, -h/2, w, h, 16); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = col; ctx.lineWidth = 2 + Math.min(fx,6)*0.9; ctx.globalAlpha = 0.95;
+  rr(-w/2, -h/2, w, h, 16); ctx.stroke(); ctx.globalAlpha = 1;
+  ctx.fillStyle = col + '26';                                   // 咒力渗透：注入得越多，卡面越亮
+  ctx.fillRect(-w/2+6, -h/2+6, (w-12)*prog, h-12);
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 34px "Microsoft YaHei", sans-serif';
+  ctx.shadowColor = col; ctx.shadowBlur = 12; ctx.fillStyle = '#ffffff';
+  ctx.fillText(domainName(kind), 0, -8);
+  ctx.shadowBlur = 0;
+  ctx.font = '15px "Microsoft YaHei", sans-serif'; ctx.fillStyle = col;
+  ctx.fillText(label + '　·　咒力注入 ' + Math.round(prog*100) + '%', 0, 22);
+  const bw = w - 60;
+  ctx.fillStyle = 'rgba(255,255,255,0.10)'; rr(-bw/2, 38, bw, 12, 6); ctx.fill();
+  ctx.fillStyle = col; rr(-bw/2, 38, bw*prog, 12, 6); ctx.fill();
+  ctx.restore();
+  ctx.textAlign = 'left';
+}
+function drawClash(t){
+  const c = clash; if(!c) return;
+  const mine = clashMine(), foe = 1 - mine;
+  ctx.fillStyle = 'rgba(3,5,14,0.68)'; ctx.fillRect(0,0,W,H);
+  for(let i=0;i<26;i++){                                        // 背景咒力乱流
+    const a = t*0.01 + i*0.9;
+    const x = W/2 + Math.cos(a)*(300 + (i%5)*70), y = 380 + Math.sin(a*1.3)*(120 + (i%7)*28);
+    ctx.fillStyle = 'rgba(255,215,122,' + (0.05 + 0.05*Math.sin(t*0.1+i)) + ')';
+    ctx.beginPath(); ctx.arc(x, y, 2 + (i%3), 0, 7); ctx.fill();
+  }
+  drawClashCard(W/2, 208, -0.13, c.kinds[foe], '敌 方 领 域', c.prog[foe], c.fx[foe], t);
+  drawClashCard(W/2, 556,  0.13, c.kinds[mine], '我 方 领 域', c.prog[mine], c.fx[mine], t);
+  /* 中央：拔河式对拼条 */
+  const bx = 300, by = 372, bw = 680, bh = 26;
+  const colM = domainColor(c.kinds[mine]), colF = domainColor(c.kinds[foe]);
+  const pos = 0.5 + (c.prog[mine] - c.prog[foe]) * 0.42;
+  ctx.fillStyle = 'rgba(255,255,255,0.09)'; rr(bx, by, bw, bh, 13); ctx.fill();
+  ctx.fillStyle = colM; rr(bx, by, bw*pos, bh, 13); ctx.fill();
+  ctx.fillStyle = colF; rr(bx + bw*pos, by, bw*(1-pos), bh, 13); ctx.fill();
+  const px = bx + bw*pos;
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(px, by-12); ctx.lineTo(px + rand(-4,4), by+bh+12); ctx.stroke();
+  ctx.shadowColor = '#ffd77a'; ctx.shadowBlur = 22; ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(px, by+bh/2, 9 + 3*Math.sin(t*0.5), 0, 7); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 46px "Microsoft YaHei", sans-serif';
+  ctx.shadowColor = '#ffd77a'; ctx.shadowBlur = 24; ctx.fillStyle = '#ffe9b0';
+  ctx.fillText('领 域 对 拼', W/2, 92);
+  ctx.shadowBlur = 0;
+  ctx.font = '16px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#c9b98a';
+  ctx.fillText('领域边缘相撞——谁的咒力更硬，谁的领域就能落下', W/2, 120);
+  const left = Math.max(0, (c.dur - c.t)/60);
+  ctx.font = 'bold 22px Consolas, monospace';
+  ctx.fillStyle = left < 1.2? '#ff8090' : '#ffd77a';
+  ctx.fillText(left.toFixed(1) + 's', W/2, 344);
+  const tip = (typeof isTouchDev !== 'undefined' && isTouchDev)
+    ? '疯狂点击屏幕！把咒力灌进自己的领域'
+    : (vsCPU || Net.mode !== 'off')? '连按 空格 注入咒力！'
+    : 'P1 连按 空格　·　P2 连按 ÷';
+  ctx.font = 'bold 21px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#dfe9ff';
+  ctx.fillText(tip, W/2, 668);
+  ctx.textAlign = 'left';
+}
+
 function drawDomain(t){
   const d = domain, p = players[d.owner], foe = players[1-d.owner];
   const shrine = d.kind==='shrine', nameless = d.kind==='nameless', aiai = d.kind==='aiai';
@@ -3805,7 +4015,7 @@ function drawDomain(t){
       drawGhosts();
       drawChar(players[0], t); drawChar(players[1], t);
       drawBeams(t, false);                                     // 领域背景之上重画光束（纯爱大炮等）
-      drawSlashes(t); drawFireZones(t);
+      drawSlashes(t); drawFireZones(t); drawDmgNums();
       if(!shrine && !nameless && !aiai) drawTrapped(foe, t);   // 真赝相爱不锁人、无束缚特效
     });
     const tt = d.t + DOMAIN_BURST;
@@ -4130,8 +4340,12 @@ const Net = {
   code:'', peer:null, conn:null, status:'',
   fx:[],             // 待同步的特效（粒子 / 环 / 公告）
   remote:null,       // 客机送来的按键
+  clashTapRemote:0,  // 客机在对拼里点了几下屏幕（房主累加）
   started:false,
   _transport:null,   // 测试用：不经网络直接对接
+  mqtt:null, broker:'', myId:'', peerId:null,       // 云信令
+  pc:null, dcRel:null, dcFast:null,                 // WebRTC 直连
+  p2p:false, relay:false, gotAny:false, gotPeer:false, snT:0,
 };
 function netFx(f){ if(Net.mode==='host' && Net.fx.length<48) Net.fx.push(f); }
 function randCode(){
@@ -4149,29 +4363,195 @@ function netShowCode(code){
   if(row) row.classList.toggle('hide', !code);
   if(el) el.textContent = code || '------';
 }
-/* PeerJS 按需加载（公共信令服务器，双方浏览器之间直连） */
-function netPeerLib(cb){
-  if(window.Peer) return cb();
+/* ---- 传输层：云信令 + WebRTC 直连 + 云中转兜底 ----
+   1. 云信令：公共 MQTT 服务器（WSS），只传握手信息 —— 双方不必在同一个局域网
+   2. 主通道：WebRTC DataChannel 直连（多组 STUN + 公共 TURN 打洞），延迟最低
+   3. 兜底：对称 NAT / 手机流量 / 公司防火墙打不通时，自动改用服务器中转
+   所以跨城市、跨运营商、手机流量，都能连上（只是延迟不同）。            */
+const ICE_SERVERS = [
+  { urls: ['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302','stun:stun.cloudflare.com:3478','stun:global.stun.twilio.com:3478'] },
+  { urls: ['turn:openrelay.metered.ca:80','turn:openrelay.metered.ca:443','turn:relay.metered.ca:80','turn:relay.metered.ca:443?transport=tcp'],
+    username:'openrelayproject', credential:'openrelayproject' },
+];
+const netTopic = c => 'jjf-rt-' + c;
+let netRelayTimer = null;
+function netLoadLib(cb){                       // 按需加载 mqtt.js（多 CDN 兜底）
+  if(window.mqtt) return cb();
   netSetStatus('正在加载联机模块…');
-  const sc = document.createElement('script');
-  sc.src = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
-  sc.onload = ()=> cb();
-  sc.onerror = ()=> netSetStatus('联机模块加载失败：请检查网络（需要能访问 unpkg.com）');
-  document.head.appendChild(sc);
+  const srcs = ['https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js',
+                'https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js',
+                'https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.1/mqtt.min.js'];
+  let i = 0;
+  (function one(){
+    if(i >= srcs.length){ netSetStatus('联机模块加载失败：请检查网络'); return; }
+    const sc = document.createElement('script');
+    sc.src = srcs[i++];
+    sc.onload = ()=> window.mqtt? cb() : one();
+    sc.onerror = one;
+    document.head.appendChild(sc);
+  })();
+}
+function netConnectBroker(cb){                 // 连云信令服务器（多服务器兜底）
+  if(Net.mqtt && Net.mqtt.connected) return cb();
+  const urls = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+  let i = 0;
+  (function one(){
+    if(i >= urls.length){ netSetStatus('连不上联机服务器：请检查网络后重试'); return; }
+    const url = urls[i++];
+    let done = false, c;
+    try{ c = window.mqtt.connect(url, {keepalive:25, connectTimeout:12000}); }
+    catch(e){ return one(); }
+    c.on('connect', ()=>{
+      if(done) return; done = true;
+      Net.mqtt = c; Net.broker = url;
+      c.on('message', (topic, buf)=> netOnWire(topic, String(buf)));
+      cb();
+    });
+    c.on('error', ()=>{ if(done) return; done = true; try{ c.end(true); }catch(_){} one(); });
+    setTimeout(()=>{ if(!done){ done = true; try{ c.end(true); }catch(_){} one(); } }, 13000);
+  })();
+}
+function netWire(k, d){                        // 往云信令服务器发一条
+  if(!Net.mqtt || !Net.mqtt.connected || !Net.code) return;
+  try{ Net.mqtt.publish(netTopic(Net.code), JSON.stringify({s:Net.myId, k, d})); }catch(e){}
+}
+function netOnWire(topic, raw){
+  if(topic !== netTopic(Net.code)) return;
+  let m; try{ m = JSON.parse(raw); }catch(e){ return; }
+  if(!m || m.s === Net.myId) return;           // 服务器会回送自己发的消息
+  Net.gotAny = true;
+  if(m.k === 'g'){ netRecv(m.d); return; }     // 云中转的游戏数据
+  if(m.k === 'bye'){ netClosedByPeer(); return; }
+  if(m.k === 'full'){ netSetStatus('房间已满（已有两人在对战）'); return; }
+  if(m.k === 'claim'){ if(Net.mode === 'host' && !Net.gotPeer) netReroom(); return; }   // 撞房间码
+  if(m.k === 'relay'){ Net.gotPeer = true; if(!Net.p2p) Net.relay = true; netEnterSelect(); return; }
+  if(m.k === 'hi'){ if(Net.mode === 'host') netHostAccept(m.s); return; }
+  netSignal(m);                                // offer / answer / ice
+}
+function netReroom(){
+  try{ Net.mqtt.unsubscribe(netTopic(Net.code)); }catch(e){}
+  Net.code = randCode();
+  try{ Net.mqtt.subscribe(netTopic(Net.code)); }catch(e){}
+  netShowCode(Net.code);
+  netWire('claim', null);
+}
+/* ---- WebRTC：房主发起，双方交换 SDP / ICE ---- */
+function netBindDc(dc){
+  dc.onmessage = e=>{ let m; try{ m = JSON.parse(e.data); }catch(_){ return; } netRecv(m); };
+  dc.onopen = ()=> netP2pReady();
+  dc.onclose = ()=>{};
+}
+function netNewPc(){
+  let pc;
+  try{ pc = new RTCPeerConnection({iceServers:ICE_SERVERS}); }
+  catch(e){ return null; }                                        // 浏览器不支持 → 直接走云中转
+  Net.pc = pc;
+  Net.dcRel  = pc.createDataChannel('rel',  {ordered:true});                    // 选人 / 开局：必须可靠
+  Net.dcFast = pc.createDataChannel('fast', {ordered:false, maxRetransmits:0});  // 每帧快照：宁丢勿等
+  netBindDc(Net.dcRel); netBindDc(Net.dcFast);
+  pc.onicecandidate = e=>{ if(e.candidate) netWire('ice', e.candidate); };
+  pc.onconnectionstatechange = ()=>{
+    if(pc.connectionState === 'failed' || pc.connectionState === 'disconnected') netFallbackRelay();
+  };
+  return pc;
+}
+function netHostAccept(peerId){
+  if(Net.gotPeer && Net.peerId !== peerId){ netWire('full'); return; }
+  Net.peerId = peerId; Net.gotPeer = true;
+  netSetStatus('对手已加入，正在建立直连…');
+  netEnterSelect();
+  const pc = netNewPc();
+  if(!pc){ netFallbackRelay(); return; }
+  pc.createOffer().then(o=>pc.setLocalDescription(o))
+    .then(()=> netWire('offer', pc.localDescription)).catch(()=>{});
+  netRelayTimer = setTimeout(netFallbackRelay, 8000);
+}
+function netSignal(m){
+  const pc = Net.pc || (function(){
+    let p;
+    try{ p = new RTCPeerConnection({iceServers:ICE_SERVERS}); }
+    catch(e){ netFallbackRelay(); return null; }
+    Net.pc = p;
+    p.ondatachannel = e=>{
+      const ch = e.channel;
+      if(ch.label === 'rel') Net.dcRel = ch; else Net.dcFast = ch;   // 加入者：接住房主建的两条通道
+      netBindDc(ch);
+      if(ch.readyState === 'open') netP2pReady();
+    };
+    p.onicecandidate = e=>{ if(e.candidate) netWire('ice', e.candidate); };
+    p.onconnectionstatechange = ()=>{
+      if(p.connectionState === 'failed' || p.connectionState === 'disconnected') netFallbackRelay();
+    };
+    netRelayTimer = setTimeout(netFallbackRelay, 9000);
+    return p;
+  })();
+  if(!pc){ netFallbackRelay(); return; }
+  if(m.k === 'offer'){
+    Net.gotPeer = true;
+    pc.setRemoteDescription(new RTCSessionDescription(m.d))
+      .then(()=> pc.createAnswer())
+      .then(a=> pc.setLocalDescription(a))
+      .then(()=> netWire('answer', pc.localDescription))
+      .catch(()=>{});
+    netEnterSelect();
+  } else if(m.k === 'answer'){
+    pc.setRemoteDescription(new RTCSessionDescription(m.d)).catch(()=>{});
+  } else if(m.k === 'ice'){
+    try{ pc.addIceCandidate(new RTCIceCandidate(m.d)); }catch(e){}
+  }
+}
+function netP2pReady(){
+  if(Net.p2p) return;
+  Net.p2p = true; Net.relay = false; clearTimeout(netRelayTimer);
+  netSetStatus('已直连（低延迟）· 你是玩家 ' + (Net.role+1) + '，请选择角色');
+  netSendSel();                              // 直连刚通：把当前选人状态补发给对方
+}
+function netFallbackRelay(){
+  if(Net.p2p || Net.mode === 'off' || !Net.gotPeer || Net.relay) return;
+  Net.relay = true;
+  netWire('relay', null);                    // 也告诉对手：改用云中转
+  netSetStatus('直连打不通 → 已切换云中转（延迟略高，仍可正常对战）· 你是玩家 ' + (Net.role+1));
 }
 function netSend(o){
   if(!o) return;
+  Net.lastSend = Date.now();
   const data = JSON.parse(JSON.stringify(o));
   if(Net._transport){ Net._transport(data); return; }
-  if(Net.conn && Net.conn.open){ try{ Net.conn.send(data); }catch(e){} }
+  if(Net.p2p){
+    const fast = (o.t === 'sn' || o.t === 'in');
+    let dc = fast? Net.dcFast : Net.dcRel;
+    if(!dc || dc.readyState !== 'open') dc = fast? Net.dcRel : Net.dcFast;   // 一条没开就走另一条
+    try{ if(dc && dc.readyState === 'open'){ dc.send(JSON.stringify(data)); return; } }catch(e){}
+  }
+  if(Net.relay || Net.gotPeer){            // 直连还没通 / 通道不可用：走云中转，保证消息不丢
+    if(Net.relay && (o.t === 'sn' || o.t === 'in')){
+      const now = Date.now();                        // 中转时按时间节流到每秒 20 次，别压垮公共服务器
+      if(now - (Net.snT || 0) < 50) return;
+      Net.snT = now;
+    }
+    if(Net.relay && data.fx && data.fx.length > 8) data.fx = data.fx.slice(0, 8);
+    netWire('g', data);
+  }
 }
 function netClose(reason){
-  try{ if(Net.conn) Net.conn.close(); }catch(e){}
-  try{ if(Net.peer) Net.peer.destroy(); }catch(e){}
+  if(Net.mqtt && Net.mqtt.connected && Net.code) netWire('bye', null);
+  clearTimeout(netRelayTimer);
+  try{ if(Net.pc) Net.pc.close(); }catch(e){}
+  const m = Net.mqtt;                       // 等 bye 真的发出去之后再断开
+  setTimeout(()=>{ try{ if(m) m.end(true); }catch(e){} }, 400);
+  Net.pc = null; Net.dcRel = null; Net.dcFast = null; Net.mqtt = null;
+  Net.p2p = false; Net.relay = false; Net.gotAny = false; Net.gotPeer = false; Net.peerId = null;
   Net.conn = null; Net.peer = null; Net.mode = 'off'; Net.remote = null;
   Net.fx = []; Net.started = false; Net.role = 0; Net.code = '';
   netShowCode('');
   if(reason) netSetStatus(reason);
+}
+/* 看门狗 + 心跳：9 秒收不到任何消息＝对手掉线；自己 3 秒没说话就发个 ping 保活 */
+function netWatchdog(){
+  if(Net.mode === 'off' || !Net.gotPeer) return;
+  const now = Date.now();
+  if(now - (Net.lastRecv || now) > 9000){ netClosedByPeer(); return; }
+  if(now - (Net.lastSend || 0) > 3000){ Net.lastSend = now; netSend({t:'ping'}); }
 }
 function netClosedByPeer(){
   if(Net.mode === 'off') return;
@@ -4180,69 +4560,36 @@ function netClosedByPeer(){
   announce('对 手 已 断 开', 100, '#ff8090');
 }
 function netCreate(){
-  netPeerLib(()=>{
-    netSetStatus('正在创建房间…'); netShowCode('');
-    const mk = ()=>{
-      Net.code = randCode();
-      let peer;
-      try{ peer = new Peer('jjf-' + Net.code, {debug:0}); }
-      catch(e){ netSetStatus('创建失败：' + e.message); return; }
-      Net.peer = peer;
-      peer.on('open', ()=>{
-        Net.mode = 'host'; Net.role = 0; Net.started = false;
+  netSetStatus('正在连接联机服务器…'); netShowCode('');
+  netLoadLib(()=> netConnectBroker(()=>{
+    Net.code = randCode(); Net.mode = 'host'; Net.role = 0; Net.started = false;
+    Net.myId = 'h' + Math.random().toString(36).slice(2,8);
+    try{
+      Net.mqtt.subscribe(netTopic(Net.code), ()=>{
         netSetStatus('房间已创建，等待对手加入…');
         netShowCode(Net.code);
+        netWire('claim', null);            // 占位：万一撞码，双方会自动换一个
       });
-      peer.on('error', e=>{
-        if(e.type === 'unavailable-id'){ try{ peer.destroy(); }catch(_){} mk(); }   // 房间码撞了，换一个
-        else netSetStatus('创建失败：' + (e.type || e.message));
-      });
-      peer.on('connection', c=>{
-        if(Net.conn){ try{ c.close(); }catch(_){} return; }        // 房间已满
-        Net.conn = c;
-        c.on('open', ()=>{
-          netSetStatus('对手已加入！请选择角色');
-          netSend({t:'hello'});
-          netEnterSelect();
-        });
-        c.on('data', d=>netRecv(d));
-        c.on('close', netClosedByPeer);
-        c.on('error', netClosedByPeer);
-      });
-    };
-    mk();
-  });
+    }catch(e){ netSetStatus('创建房间失败：' + e.message); }
+  }));
 }
 function netJoin(code){
   code = String(code || '').trim().toUpperCase();
   if(code.length < 4){ netSetStatus('房间码至少 4 位'); return; }
-  netPeerLib(()=>{
-    netSetStatus('正在连接 ' + code + ' …');
-    let peer;
-    try{ peer = new Peer({debug:0}); }
-    catch(e){ netSetStatus('连接失败：' + e.message); return; }
-    Net.peer = peer;
-    let ok = false;
-    peer.on('open', ()=>{
-      const c = peer.connect('jjf-' + code, {reliable:true});
-      Net.conn = c;
-      c.on('open', ()=>{
-        ok = true;
-        Net.mode = 'client'; Net.role = 1; Net.code = code; Net.started = false;
-        netSetStatus('已连接，请选择角色');
-        netSend({t:'hello'});
-        netEnterSelect();
+  netLoadLib(()=> netConnectBroker(()=>{
+    Net.code = code; Net.mode = 'client'; Net.role = 1; Net.started = false;
+    Net.myId = 'c' + Math.random().toString(36).slice(2,8);
+    netSetStatus('正在加入 ' + code + ' …');
+    try{
+      Net.mqtt.subscribe(netTopic(code), ()=>{
+        netWire('hi', null);               // 打招呼：房主收到后会发起直连
+        setTimeout(()=>{
+          if(Net.mode === 'client' && !Net.p2p && !Net.relay && !Net.gotAny)
+            netSetStatus('连不上：房间 ' + code + ' 不存在，或房主已关闭');
+        }, 10000);
       });
-      c.on('data', d=>netRecv(d));
-      c.on('close', netClosedByPeer);
-      c.on('error', netClosedByPeer);
-      setTimeout(()=>{ if(!ok && Net.mode!=='client') netSetStatus('连不上：房间不存在，或房主已关闭'); }, 7000);
-    });
-    peer.on('error', e=>{
-      if(e.type === 'peer-unavailable') netSetStatus('房间不存在或已关闭：' + code);
-      else if(e.type !== 'network') netSetStatus('连接失败：' + (e.type || e.message));
-    });
-  });
+    }catch(e){ netSetStatus('加入失败：' + e.message); }
+  }));
 }
 function netCopyCode(){
   const code = Net.code;
@@ -4267,6 +4614,7 @@ function netSendSel(){
 }
 function netRecv(m){
   if(!m || !m.t) return;
+  Net.lastRecv = Date.now();
   if(m.t === 'hello'){
     if(Net.mode === 'host'){
       netSetStatus('对手已加入！请选择角色');
@@ -4283,6 +4631,7 @@ function netRecv(m){
     netStartFight(m.picks);
   } else if(m.t === 'in'){
     Net.remote = m;                                  // 客机的按键（房主用来驱动 P2）
+    if(m.ct) Net.clashTapRemote += m.ct;             // 客机在对拼里的点击
   } else if(m.t === 'sn'){
     netApplySnap(m);                                 // 房主广播的状态快照
   } else if(m.t === 'bye'){
@@ -4336,7 +4685,7 @@ function netApplyPlayer(p, s){
 function netSnapshot(){
   return { t:'sn', st:state, stm:Math.round(stateTimer),
     pl:[netSnapPlayer(players[0]), netSnapPlayer(players[1])],
-    orbs, beams, sl:slashes, fz:fireZones, dm:domain, fu:fusions,
+    orbs, beams, sl:slashes, fz:fireZones, dm:domain, fu:fusions, cl:clash,
     fx:Net.fx, sh:Math.round(shake*10)/10, fl:Math.round(flash*100)/100, hs:hitStop };
 }
 function netApplySnap(s){
@@ -4346,11 +4695,12 @@ function netApplySnap(s){
   netApplyPlayer(players[0], s.pl[0]);
   netApplyPlayer(players[1], s.pl[1]);
   orbs = s.orbs || []; beams = s.beams || []; slashes = s.sl || [];
-  fireZones = s.fz || []; fusions = s.fu || []; domain = s.dm || null;
+  fireZones = s.fz || []; fusions = s.fu || []; domain = s.dm || null; clash = s.cl || null;
   for(const f of (s.fx || [])){
     if(f[0] === 0) spawnParticles(f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8]);
     else if(f[0] === 1) ring(f[1], f[2], f[3], f[4], f[5], f[6]);
     else if(f[0] === 2) announce(f[1], f[2], f[3], f[4]);
+    else if(f[0] === 3) showDmg(f[1], f[2], f[3], f[4], f[5]);
   }
   shake = Math.max(shake, s.sh || 0);
   flash = Math.max(flash, s.fl || 0);
@@ -4358,7 +4708,8 @@ function netApplySnap(s){
 /* 客机 → 房主：本机按键 */
 function netLocalInput(){
   const km = players[Net.role].kmap;
-  return { t:'in', l:!!keys[km.left], r:!!keys[km.right], u:!!keys[km.up], d:!!keys[km.down],
+  const ct = clashTaps[Net.role] | 0; clashTaps[Net.role] = 0;   // 领域对拼：点屏幕的次数一起上送
+  return { t:'in', ct, l:!!keys[km.left], r:!!keys[km.right], u:!!keys[km.up], d:!!keys[km.down],
     p:!!(keys[km.punch] || keys[km.punch2]), g:!!(keys[km.dodge] || keys[km.dodge2]),
     s:[ !!(keys[km.s1[0]] || keys[km.s1[1]]), !!(keys[km.s2[0]] || keys[km.s2[1]]),
         !!(keys[km.s3[0]] || keys[km.s3[1]]), !!(keys[km.s4[0]] || keys[km.s4[1]]) ] };
@@ -4392,10 +4743,12 @@ let titleLock = 0;                     // 回标题后短暂锁输入，防止�
 function goTitle(){
   if(state==='title') return;
   netClose();
+  clash = null;
   state = 'title';
   selState = null;
   players = [makePlayer(0), makePlayer(1)];
   orbs = []; particles = []; beams = []; fusions = []; announcements = []; ghosts = [];
+  dmgNums = [];
   shake = 0; slowmo = 1; flash = 0; camX = 0; zoom = 1; hitStop = 0; domain = null;
   aiReset();
   // 清掉残留输入（含虚拟按键），否则回标题瞬间就会被「任意键」直接开局
@@ -4420,6 +4773,13 @@ function releaseEl(id){
   el.classList.remove('on'); vUp(el.dataset.key);
   delete titleStale[el.dataset.key]; delete held[id];
 }
+/* 领域对拼：点屏幕＝注入咒力（手机的主要操作方式） */
+cv.addEventListener('pointerdown', e=>{
+  if(state !== 'clash') return;
+  e.preventDefault();
+  clashTaps[clashMine()]++;
+});
+
 document.querySelectorAll('.pad .btn').forEach(el=>{
   el.addEventListener('pointerdown', e=>{
     e.preventDefault();
@@ -4547,6 +4907,7 @@ function loop(now){
     }
   }
 
+  netWatchdog();            // 联机：掉线检测 + 心跳
   syncUI();
 
   if(hitStop>0) hitStop--;
@@ -4557,7 +4918,12 @@ function loop(now){
     while(timeAcc >= 1 && guard < 3){
       timeAcc -= 1; guard++;
       if(state==='select' && selState) updateSelectInput();
-      if(state==='fight'||state==='ko'){
+      if(state==='clash'){                          // 领域对拼：房主跑对拼逻辑，客机只上送点击
+        if(Net.mode==='host'){ updateClash(); netSend(netSnapshot()); Net.fx = []; }
+        else if(Net.mode==='client'){ netSend(netLocalInput()); }
+        else updateClash();
+      }
+      else if(state==='fight'||state==='ko'){
         if(Net.mode==='host'){
           netApplyRemote();                    // 客机按键 → 驱动 P2
           updatePlayer(players[0], players[1], players[0].kmap);
@@ -4618,6 +4984,7 @@ function loop(now){
   drawChar(players[1], t);
   drawFusions(t);
   drawBeams(t);
+  drawDmgNums();
   drawEffects(t);
   ctx.restore();
   ctx.restore();
@@ -4645,6 +5012,7 @@ function loop(now){
     if(state==='net'){ ctx.fillStyle='rgba(4,6,16,0.55)'; ctx.fillRect(0,0,W,H); }   // 联机面板压在标题上
   }
   if(state==='select' && selState) drawSelect(t);
+  if(state==='clash') drawClash(t);
   if(state==='ko') drawKO(t);
 }
 requestAnimationFrame(loop);

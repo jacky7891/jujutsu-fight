@@ -22,9 +22,15 @@
     font-family:inherit; cursor:pointer; touch-action:none;
     background:transparent; transition:background .08s; }
   .mbtn:active { background:rgba(255,255,255,.16); }
-  #m1 { left:215px; top:556px; width:270px; height:84px; border-radius:10px; }
-  #m2 { left:505px; top:556px; width:270px; height:84px; border-radius:10px; }
-  #m3 { left:795px; top:556px; width:270px; height:84px; border-radius:10px; }
+  #m1 { left:190px; top:556px; width:210px; height:84px; border-radius:10px; }
+  #m2 { left:420px; top:556px; width:210px; height:84px; border-radius:10px; }
+  #m3 { left:650px; top:556px; width:210px; height:84px; border-radius:10px; }
+  #m4 { left:880px; top:556px; width:210px; height:84px; border-radius:10px; }
+  .dbtn { position:absolute; pointer-events:auto; border:0; background:transparent;
+    cursor:pointer; touch-action:none; transition:background .08s;
+    top:250px; height:196px; width:240px; border-radius:14px; }
+  .dbtn:active { background:rgba(255,255,255,.16); }
+  #d0 { left:136px; } #d1 { left:392px; } #d2 { left:648px; } #d3 { left:904px; }
   .kbtn { top:410px; height:46px; width:158px; border-radius:8px; font-size:16px; letter-spacing:2px;
     background:rgba(18,26,52,.8); border:1px solid rgba(150,180,255,.45); color:#c8d6f8; }
   .kbtn:active { background:rgba(90,160,255,.45); }
@@ -52,6 +58,8 @@
   .ebtn.hide { display:none; }
 
   /* ---- 联机面板 ---- */
+  #nameUI { display:flex; align-items:center; justify-content:center; z-index:40; }
+  #nameUI.hide { display:none; }
   #netUI { display:flex; align-items:center; justify-content:center; }
   #netUI.hide { display:none; }
   .netbox { position:relative; width:640px; padding:22px 28px 20px; border-radius:16px;
@@ -129,6 +137,25 @@
       <button class="mbtn" id="m1" data-mode="1"></button>
       <button class="mbtn" id="m2" data-mode="2"></button>
       <button class="mbtn" id="m3" data-mode="3"></button>
+      <button class="mbtn" id="m4" data-mode="4"></button>
+    </div>
+    <div id="diffUI" class="ov hide">
+      <button class="dbtn" id="d0" data-lv="0"></button>
+      <button class="dbtn" id="d1" data-lv="1"></button>
+      <button class="dbtn" id="d2" data-lv="2"></button>
+      <button class="dbtn" id="d3" data-lv="3"></button>
+    </div>
+    <div id="nameUI" class="ov hide">
+      <div class="netbox" style="width:560px">
+        <div class="nettitle">进 入 前 十 !</div>
+        <div id="nameInfo" class="netstatus">…</div>
+        <div class="joinrow" style="justify-content:center; margin:16px 0 6px">
+          <input id="nameInput" class="netinput" maxlength="8" placeholder="你的名字"
+                 autocomplete="off" spellcheck="false">
+          <button class="nbtn small" id="nameOk">登 记</button>
+        </div>
+        <div class="nettip">只记录「疯狂 / 地狱」难度通关的用时　·　按 Enter 直接登记</div>
+      </div>
     </div>
     <div id="koUI" class="ov hide">
       <button class="kbtn" id="kr" data-act="r">重 新 开 始</button>
@@ -530,6 +557,11 @@ function drawDmgNums(){
 }
 function damage(att, def, dmg, kb, kbY, stun, type){
   if(def.hp<=0) return;
+  if(vsCPU){                                   // 人机难度：疯狂 / 地狱 有伤害与抗性加成
+    const L = aiLv();
+    if(att && att.id === 1) dmg *= L.dmg;      // 人机打出来的
+    if(def.id === 1)        dmg *= L.taken;    // 人机挨到的
+  }
   if(def.invul>0 && type!=='cleave') return;      // 捌 的刀光无视无敌
   const col = type==='hollow'? '#c04aff' : type==='red'? '#ff5060' :
               type==='blue'? '#5aa0ff' : type==='flame'? '#ff9040' :
@@ -724,6 +756,13 @@ function ko(winner, loser){
   winner.wins++;
   announce(winner.id===0? '玩家 1 胜!':'玩家 2 胜!', 150, '#ffd24a');
   spawnParticles(loser.x, loser.y-loser.h*0.5, 60, '#ff8090', 9, 60, 6, 0.2);
+  // 通关（P1 在 疯狂/地狱 难度赢下整场）：算成绩
+  if(winner.id===0 && vsCPU && aiLevel>=2 && winner.wins>=2 && !runDone){
+    runDone = true;
+    const sec = runMs/1000, ch = picks[0];
+    if(lbQualify(ch, sec)) lbPending = { ch, sec };
+    else lbMsg = '本次用时 ' + fmtT(sec) + '　·　未进入前十，不记录';
+  }
 }
 
 /* ================= 术式球 ================= */
@@ -3385,8 +3424,9 @@ function drawHUD(t){
     ctx.fillStyle = left? '#7fb4ff':'#ff8f9c';
     ctx.fillText(CH.name+(left?' P1':(vsCPU?' CPU':' P2')), left? bx+130 : bx+444, 92);
     if(!left && vsCPU){
-      ctx.font='bold 11px sans-serif'; ctx.fillStyle='#c04aff';
-      ctx.fillText('人 机', left? bx+16 : bx+444, 106);
+      const L = aiLv();
+      ctx.font='bold 11px sans-serif'; ctx.fillStyle = L.col;
+      ctx.fillText('人 机 · ' + L.name, left? bx+16 : bx+444, 106);
     }
     // 真赝相爱：领域增益与剩余时间
     if(domain && domain.kind==='aiai' && domain.phase===2 && p.id===domain.owner){
@@ -3426,11 +3466,59 @@ function drawHUD(t){
 
 /* ================= 人机（CPU） ================= */
 let vsCPU = false;
-let ai = { think:0, mode:'approach', hold:{}, charging:false, jumpCd:0 };
+/* 人机四档难度：反应 / 决策间隔 / 出招欲望 / 伤害与抗性
+   简单＝练手　标准＝原本的强度　疯狂＝全程压制　地狱＝贴脸猛攻 + 数值加成 */
+const AI_LEVELS = [
+  { name:'简 单', col:'#7fe0c0', think:[26,30], aggr:0.55, react:0.45, engage:90,  dmg:0.85, taken:1.25, clash:0.06,
+    desc:['反应慢、出招保守，很少放领域','适合先熟悉操作'] },
+  { name:'标 准', col:'#ffd24a', think:[16,22], aggr:1.00, react:1.00, engage:110, dmg:1.00, taken:1.00, clash:0.15,
+    desc:['会闪避、会格挡、会接连招','势均力敌的人机对手'] },
+  { name:'疯 狂', col:'#ff9040', think:[9,13],  aggr:1.70, react:1.90, engage:140, dmg:1.12, taken:0.92, clash:0.30,
+    desc:['反应极快，贴身压制不停手','伤害 +12%、受伤 -8%'] },
+  { name:'地 狱', col:'#ff5060', think:[5,8],   aggr:2.60, react:3.00, engage:170, dmg:1.30, taken:0.80, clash:0.45,
+    desc:['全程贴脸猛攻，几乎不给喘息','伤害 +30%、受伤 -20%'] },
+];
+let aiLevel = 1;
+try{ const s = localStorage.getItem('gojo_ai'); if(s !== null) aiLevel = clamp(+s|0, 0, 3); }catch(_){}
+const aiLv = ()=> AI_LEVELS[aiLevel] || AI_LEVELS[1];
+function setAiLevel(n){
+  aiLevel = clamp(n|0, 0, 3);
+  try{ localStorage.setItem('gojo_ai', String(aiLevel)); }catch(_){}
+}
+
+/* ================= 通关计时排行榜 =================
+   只记「单人 vs 人机」里 疯狂 / 地狱 难度通关（P1 赢下整场）的用时；
+   按角色分别排行、只留前十、用时越短名次越高。                     */
+const LB_MAX = 10;
+let runMs = 0;                 // 本次通关计时（毫秒）
+let runDone = false;           // 本次成绩是否已经处理过
+let lbPending = null;          // 待登记的成绩 {ch, sec}
+let lbMsg = '';                // KO 界面上给玩家的一句话
+const lbKey = ch => 'gojo_board_' + ch;
+function lbGet(ch){
+  try{ const a = JSON.parse(localStorage.getItem(lbKey(ch)) || '[]'); return Array.isArray(a)? a : []; }
+  catch(_){ return []; }
+}
+function lbSave(ch, list){ try{ localStorage.setItem(lbKey(ch), JSON.stringify(list.slice(0, LB_MAX))); }catch(_){} }
+function lbQualify(ch, sec){ const l = lbGet(ch); return l.length < LB_MAX || sec < l[LB_MAX-1].t; }
+function lbRank(ch, sec){ const l = lbGet(ch); let r = l.length+1; for(let i=0;i<l.length;i++) if(sec < l[i].t){ r = i+1; break; } return r; }
+function lbAdd(ch, name, sec){
+  const l = lbGet(ch);
+  l.push({ n:(String(name||'').trim().slice(0,8) || '无名'), t:Math.round(sec*100)/100, d:aiLevel });
+  l.sort((a,b)=> a.t-b.t);
+  lbSave(ch, l);
+}
+function fmtT(s){
+  const m = Math.floor(s/60), r = s-m*60;
+  if(m<=0) return r.toFixed(2) + 's';
+  return m + ':' + (r<10? '0':'') + r.toFixed(2);
+}
+function lbResetRun(){ runMs = 0; runDone = false; lbPending = null; lbMsg = ''; }
+let ai = { think:0, mode:'approach', hold:{}, charging:false, chargeT:0, jumpCd:0 };
 const aS = (p,n)=>p.aiKeys['s'+n][0];      // 人机第 n 槽技能键
 
 function aiReset(){
-  ai = { think:0, mode:'approach', hold:{}, charging:false, jumpCd:0 };
+  ai = { think:0, mode:'approach', hold:{}, charging:false, chargeT:0, jumpCd:0 };
   for(const c of ALL_AI_CODES) keys[c] = false;
 }
 function aiPress(code){ if(!keys[code]) pressBuf[code] = 5; keys[code] = true; }
@@ -3444,6 +3532,8 @@ function updateAI(p, foe){
   if(ai.jumpCd>0) ai.jumpCd--;
   if(p.hp<=0 || state!=='fight'){ keys.AIH = false; return; }
 
+  const L = aiLv();                     // 本局难度
+  const P = x => x*L.aggr;              // 出招欲望：难度越高越频繁（都受各自冷却限制）
   const adx = Math.abs(foe.x - p.x);
   // 硬直 / 出招 / 蓄力 期间不做新决策，其余（含防御、走位）照常执行
   const busy = p.stun>0 || p.state==='hollowCharge' || p.state==='hollowCast' ||
@@ -3460,7 +3550,7 @@ function updateAI(p, foe){
   const yt  = p.char==='yuta';
 
   // 通用：对手贴身 / 术式逼近时闪避（突进 + 无敌帧）
-  if(!busy && p.state!=='dodge' && p.cd.dodge<=0 && p.energy>=14 && Math.random()<0.04){
+  if(!busy && p.state!=='dodge' && p.cd.dodge<=0 && p.energy>=14 && Math.random()<0.04*L.react){
     const threat = adx<210 || orbs.some(o=>o.owner!==p.id && Math.abs(o.x-p.x)<170) ||
                    foe.state==='dashPunch' || foe.state==='thrust' || foe.state==='kesaSlash';
     if(threat){ if(adx<200 && Math.random()<0.5){ aiPress(p.x<foe.x? 'AIL':'AIR'); ai.hold[p.x<foe.x? 'AIL':'AIR'] = 3; } aiTap(p.aiKeys.dodge); }
@@ -3469,13 +3559,14 @@ function updateAI(p, foe){
   // 咒力满 → 优先领域展开，否则蓄力释放大招（茈 / 灶·开）
   if(p.energy>=100 && !ai.charging && (p.state==='idle'||p.state==='walk')){
     const dReady = suk? (p.cd.shrine<=0) : (p.cd.domain<=0);
-    if(!domain && dReady && p.onGround && adx<560 && Math.random()<0.5){
+    if(!domain && dReady && p.onGround && adx<560 && Math.random()<Math.min(0.95, 0.5*L.aggr)){
       aiTap(aS(p,4));
     } else {
-      ai.charging = true; aiHoldKey(aS(p,3), 26 + (Math.random()*45|0));
+      ai.charging = true; ai.chargeT = 110; aiHoldKey(aS(p,3), 26 + (Math.random()*45|0));
     }
   }
-  if(ai.charging && p.energy<40) ai.charging = false;
+  // 蓄力结束就恢复正常决策（大招放完咒力可能还剩不少，只靠咒力判断会永远卡在「靠近」）
+  if(ai.charging){ ai.chargeT--; if(ai.chargeT<=0 || p.energy<40) ai.charging = false; }
 
   // 敌方术式球逼近 → 起跳躲开
   if(p.onGround && ai.jumpCd<=0){
@@ -3494,20 +3585,22 @@ function updateAI(p, foe){
   // 决策（带反应延迟，更像人）
   ai.think--;
   if(ai.think<=0){
-    ai.think = 10 + (Math.random()*22|0);
+    ai.think = L.think[0] + (Math.random()*L.think[1]|0);      // 难度越高，重新决策越快
     if(ai.charging) ai.mode = 'approach';
     else if(foeCharging && adx<620) ai.mode = 'rush';
     else if(adx>430) ai.mode = 'approach';
-    else if(adx>95){
-      const r = Math.random();
-      if(r<0.42) ai.mode = 'approach';
-      else if(r<0.72) ai.mode = 'zone';
-      else if(r<0.88) ai.mode = 'retreat';
+    else if(adx>L.engage){                               // 难度越高，在越远的距离就摆出进攻姿态
+      const r = Math.random();                                 // 中距：压近 / 远程压制 / 拉开 / 格挡
+      const ap = Math.min(0.80, 0.42*L.aggr), zn = ap + 0.30, rt = zn + Math.min(0.30, 0.16/L.aggr);
+      if(r<ap) ai.mode = 'approach';
+      else if(r<zn) ai.mode = 'zone';
+      else if(r<rt) ai.mode = 'retreat';
       else ai.mode = 'block';
     } else {
-      const r = Math.random();
-      if(r<0.62) ai.mode = 'attack';
-      else if(r<0.82) ai.mode = 'block';
+      const r = Math.random();                                 // 近身：猛攻 / 格挡 / 拉开
+      const atk = Math.min(0.92, 0.62*L.aggr), blk = atk + 0.20/L.aggr;
+      if(r<atk) ai.mode = 'attack';
+      else if(r<blk) ai.mode = 'block';
       else ai.mode = 'retreat';
     }
   }
@@ -3516,45 +3609,45 @@ function updateAI(p, foe){
     if(adx>72) keys[foe.x>p.x?'AIR':'AIL'] = true;
     if(ai.mode==='rush'){
       if(suk){
-        if(adx<520 && p.cd.cleave<=0 && p.energy>=10 && Math.random()<0.10)
+        if(adx<520 && p.cd.cleave<=0 && p.energy>=10 && Math.random()<P(0.10))
           aiHoldKey(aS(p,1), 10 + (Math.random()*22|0));
       } else if(yj){
-        if(adx<560 && p.cd.dash<=0 && p.energy>=18 && Math.random()<0.10) aiTap(aS(p,1)); // 冲拳突进
+        if(adx<560 && p.cd.dash<=0 && p.energy>=18 && Math.random()<P(0.10)) aiTap(aS(p,1)); // 冲拳突进
       } else if(yt){
-        if(adx<560 && p.cd.thrust<=0 && p.energy>=16 && Math.random()<0.10) aiTap(aS(p,1)); // 突刺突进
-      } else if(adx<520 && p.cd.red<=0 && p.energy>=22 && Math.random()<0.10) aiTap(aS(p,2));
+        if(adx<560 && p.cd.thrust<=0 && p.energy>=16 && Math.random()<P(0.10)) aiTap(aS(p,1)); // 突刺突进
+      } else if(adx<520 && p.cd.red<=0 && p.energy>=22 && Math.random()<P(0.10)) aiTap(aS(p,2));
     }
   } else if(ai.mode==='retreat'){
     if(adx<560) keys[foe.x>p.x?'AIL':'AIR'] = true;
   } else if(ai.mode==='block'){
     keys.AID = true;
-    if(adx<130 && Math.random()<0.05) aiTap(p.aiKeys.punch);
+    if(adx<130 && Math.random()<P(0.05)) aiTap(p.aiKeys.punch);
   } else if(ai.mode==='zone'){
     if(adx>72) keys[foe.x>p.x?'AIR':'AIL'] = true;
     if(suk){
-      if(p.cd.cleave<=0 && p.energy>=10 && Math.random()<0.12)
+      if(p.cd.cleave<=0 && p.energy>=10 && Math.random()<P(0.12))
         aiHoldKey(aS(p,1), 10 + (Math.random()*24|0));       // 解：按住蓄力再松手
-      else if(p.cd.flame<=0 && p.energy>=45 && adx>300 && Math.random()<0.05)
+      else if(p.cd.flame<=0 && p.energy>=45 && adx>300 && Math.random()<P(0.05))
         aiHoldKey(aS(p,3), 20 + (Math.random()*40|0));       // 灶·开
     } else if(yj){
-      if(p.cd.blood<=0 && p.energy>=24 && adx>220 && Math.random()<0.11) aiTap(aS(p,2));   // 穿血
-      else if(p.cd.dash<=0 && p.energy>=18 && adx>150 && Math.random()<0.09) aiTap(aS(p,1)); // 冲拳
+      if(p.cd.blood<=0 && p.energy>=24 && adx>220 && Math.random()<P(0.11)) aiTap(aS(p,2));   // 穿血
+      else if(p.cd.dash<=0 && p.energy>=18 && adx>150 && Math.random()<P(0.09)) aiTap(aS(p,1)); // 冲拳
     } else if(yt){
-      if(inAiAi(p) && Math.random()<0.035) aiTap(aS(p,4));                                 // 纯爱大炮
-      else if(p.cd.kesa<=0 && p.energy>=26 && adx<300 && Math.random()<0.12) aiTap(aS(p,2));    // 袈裟斬
-      else if(p.cd.mimic<=0 && Math.random()<0.12)
+      if(inAiAi(p) && Math.random()<P(0.035)) aiTap(aS(p,4));                                // 纯爱大炮
+      else if(p.cd.kesa<=0 && p.energy>=26 && adx<300 && Math.random()<P(0.12)) aiTap(aS(p,2));   // 袈裟斬
+      else if(p.cd.mimic<=0 && Math.random()<P(0.12))
         aiTap(aS(p,3));                                                                     // 术式模仿（轮换）
-      else if(p.cd.thrust<=0 && p.energy>=16 && adx>200 && Math.random()<0.09) aiTap(aS(p,1));
+      else if(p.cd.thrust<=0 && p.energy>=16 && adx>200 && Math.random()<P(0.09)) aiTap(aS(p,1));
     } else {
-      if(p.cd.blue<=0 && p.energy>=12 && Math.random()<0.11) aiTap(aS(p,1));
-      else if(p.cd.red<=0 && p.energy>=22 && Math.random()<0.06) aiTap(aS(p,2));
+      if(p.cd.blue<=0 && p.energy>=12 && Math.random()<P(0.11)) aiTap(aS(p,1));
+      else if(p.cd.red<=0 && p.energy>=22 && Math.random()<P(0.06)) aiTap(aS(p,2));
     }
   } else if(ai.mode==='attack'){
     if(adx>76) keys[foe.x>p.x?'AIR':'AIL'] = true;
-    else if(suk && adx<170 && p.cd.grab<=0 && p.energy>=20 && Math.random()<0.14) aiTap(aS(p,2)); // 捌
-    else if(yj && adx<250 && p.cd.ycut<=0 && p.energy>=30 && Math.random()<0.10)
+    else if(suk && adx<170 && p.cd.grab<=0 && p.energy>=20 && Math.random()<P(0.14)) aiTap(aS(p,2)); // 捌
+    else if(yj && adx<250 && p.cd.ycut<=0 && p.energy>=30 && Math.random()<P(0.10))
       aiHoldKey(aS(p,3), 12 + (Math.random()*28|0));                                             // 解
-    else if(yt && adx<260 && p.cd.mimic<=0 && Math.random()<0.12)
+    else if(yt && adx<260 && p.cd.mimic<=0 && Math.random()<P(0.12))
       aiTap(aS(p,3));                                                                             // 术式模仿（轮换）
     else if(p.state==='idle' || (p.state==='punch' && p.stateT>8)) aiTap(p.aiKeys.punch);
   }
@@ -3884,7 +3977,7 @@ function clashCollect(){
   taps[mine] += clashTaps[mine]; clashTaps[mine] = 0;              // 手机：点屏幕
   if(Net.mode === 'host'){ taps[1] += Net.clashTapRemote; Net.clashTapRemote = 0; }   // 联机：客机上送的点击
   else if(Net.mode === 'client'){ /* 客机不跑战斗，点击已随输入上送 */ }
-  else if(vsCPU){ if(Math.random() < 0.15) taps[1]++; }            // 人机：CPU 自动按空格
+  else if(vsCPU){ if(Math.random() < aiLv().clash) taps[1]++; }    // 人机：CPU 自动按空格（难度越高按得越凶）
   else { const k2 = players[1].kmap; if(tapOnce(k2.dodge) || tapOnce(k2.dodge2)) taps[1]++; }
   return taps;
 }
@@ -4103,6 +4196,8 @@ function drawDomain(t){
 /* ================= 角色选择 ================= */
 const CARD = { x0:64, gap:16, w:272, h:380, y:140 };   // 四张角色卡等分居中
 function beginSelect(mode){
+  lbResetRun();                // 开始新的一场：通关计时清零
+  nameEl.classList.add('hide');
   vsCPU = (mode===2);
   selState = { idx:[0, vsCPU?1:0], done:[false,false], timer:0, readyT:0 };
   state = 'select';
@@ -4296,12 +4391,13 @@ function drawTitle(t){
   // 模式选择
   const pulse = 0.5+0.5*Math.sin(t*0.004);
   const modes = [
-    {x:W/2-425, key:'1', title:'双 人 对 战', sub:'P1 与 P2 同屏对打', col:'#5aa0ff'},
-    {x:W/2-135, key:'2', title:'单 人 对 战', sub:'P1 对 战 人 机', col:'#ff7080'},
-    {x:W/2+155, key:'3', title:'联 机 对 战', sub:'房间码 · 异地对战', col:'#7fe0c0'},
+    {x:W/2-450, key:'1', title:'双 人 对 战', sub:'P1 与 P2 同屏对打', col:'#5aa0ff'},
+    {x:W/2-220, key:'2', title:'单 人 对 战', sub:'人机 · ' + aiLv().name, col:'#ff7080'},
+    {x:W/2+10,  key:'3', title:'联 机 对 战', sub:'房间码 · 异地对战', col:'#7fe0c0'},
+    {x:W/2+240, key:'4', title:'排 行 榜',    sub:'通关计时 · 前十', col:'#ffd24a'},
   ];
   for(const m of modes){
-    const w = 270, h = 84, y = 556;
+    const w = 210, h = 84, y = 556;
     rr(m.x, y, w, h, 10);
     ctx.strokeStyle = m.col; ctx.globalAlpha = 0.5+0.5*pulse; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = m.col; ctx.globalAlpha = 0.08+0.07*pulse; ctx.fill();
@@ -4316,7 +4412,109 @@ function drawTitle(t){
   }
   ctx.textAlign='center';
   ctx.font='15px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#6f7ba0';
-  ctx.fillText('（直接按其他任意键 ＝ 双人对战　·　按 3 或点第三张卡 ＝ 联机）', W/2, 668);
+  ctx.fillText('（任意键 ＝ 双人对战　·　按 3 ＝ 联机　·　按 4 ＝ 排行榜）', W/2, 668);
+}
+/* ================= 排行榜界面 ================= */
+let lbCur = null;                 // 正在登记的成绩
+let lbBoard = null;               // 刚登记的那条（榜上高亮）
+function lbOpenName(){
+  if(!lbPending) return;
+  lbCur = lbPending; lbPending = null;
+  nameInfoEl.textContent = CHARS[lbCur.ch].name + '　用时 ' + fmtT(lbCur.sec) +
+                           '　·　第 ' + lbRank(lbCur.ch, lbCur.sec) + ' 名';
+  nameInputEl.value = '';
+  nameEl.classList.remove('hide');
+  koEl.classList.add('hide');            // 登记期间收起「重新开始」按钮，避免遮挡
+  try{ nameInputEl.focus(); }catch(_){}
+}
+function lbCommit(){
+  if(!lbCur) return;
+  lbAdd(lbCur.ch, nameInputEl.value, lbCur.sec);
+  lbBoard = { ch:lbCur.ch, t:Math.round(lbCur.sec*100)/100 };
+  lbCur = null;
+  nameEl.classList.add('hide');
+  state = 'lb';                                  // 登记完直接看榜
+}
+function drawLB(t){
+  ctx.fillStyle = 'rgba(4,6,16,0.9)'; ctx.fillRect(0,0,W,H);
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 38px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#eaf2ff';
+  ctx.fillText('通 关 排 行 榜', W/2, 76);
+  ctx.font = '14px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#8f9bc0';
+  ctx.fillText('只记录「疯狂 / 地狱」难度、单人打赢人机的通关用时　·　每个角色各取前 10', W/2, 108);
+  const cw = 292, gap = 12, x0 = (W-(cw*4+gap*3))/2, yTop = 140;
+  CHAR_LIST.forEach((ch, ci)=>{
+    const CH = CHARS[ch], x = x0 + ci*(cw+gap), list = lbGet(ch);
+    rr(x, yTop, cw, 396, 12);
+    ctx.fillStyle = CH.hud; ctx.globalAlpha = 0.07; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.strokeStyle = CH.hud; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.5; ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 19px "Microsoft YaHei", sans-serif'; ctx.fillStyle = CH.hud;
+    ctx.fillText(CH.name, x+cw/2, yTop+30);
+    ctx.font = '11px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#7c88ac';
+    ctx.fillText('用时越短越好', x+cw/2, yTop+48);
+    for(let i=0;i<LB_MAX;i++){
+      const y = yTop+78+i*32, e = list[i];
+      const mine = !!(lbBoard && lbBoard.ch===ch && e && Math.abs(e.t-lbBoard.t)<0.005);
+      if(mine){ ctx.fillStyle='rgba(255,210,74,0.18)'; rr(x+8, y-17, cw-16, 28, 6); ctx.fill(); }
+      ctx.textAlign = 'left';
+      ctx.font = 'bold 14px Consolas, monospace'; ctx.fillStyle = i<3? '#ffd24a' : '#6f7ba0';
+      ctx.fillText(String(i+1).padStart(2,'0'), x+18, y);
+      ctx.font = '15px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = e? (mine? '#fff2b0' : '#c3cde8') : '#39415c';
+      ctx.fillText(e? e.n : '—', x+50, y);
+      ctx.textAlign = 'right';
+      ctx.font = 'bold 15px Consolas, monospace';
+      ctx.fillStyle = e? (mine? '#ffd24a' : '#aab6d8') : '#39415c';
+      ctx.fillText(e? fmtT(e.t) : '—', x+cw-18, y);
+      if(e){
+        ctx.font = 'bold 10px "Microsoft YaHei", sans-serif';
+        ctx.fillStyle = e.d>=3? '#ff5060' : '#ff9040';
+        ctx.fillText(e.d>=3? '地狱' : '疯狂', x+cw-18, y+13);
+      }
+    }
+  });
+  ctx.textAlign = 'center';
+  ctx.font = '15px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#6f7ba0';
+  ctx.fillText('ESC 或左上角退出键 返回标题', W/2, 578);
+}
+
+/* 人机难度选择 */
+function drawDiff(t){
+  ctx.fillStyle = 'rgba(4,6,16,0.78)'; ctx.fillRect(0,0,W,H);
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 44px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#eaf2ff';
+  ctx.fillText('选 择 人 机 难 度', W/2, 150);
+  ctx.font = '15px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#8f9bc0';
+  ctx.fillText('只影响「单人 vs 人机」　·　选择会被记住，下次直接生效', W/2, 184);
+  const bw = 240, bh = 196, gap = 16, x0 = (W-(bw*4+gap*3))/2, y0 = 250;
+  AI_LEVELS.forEach((L, i)=>{
+    const x = x0 + i*(bw+gap), sel = i===aiLevel, pulse = sel? 0.5+0.5*Math.sin(t*0.006) : 0;
+    rr(x, y0, bw, bh, 14);
+    ctx.fillStyle = L.col; ctx.globalAlpha = sel? 0.16+0.10*pulse : 0.06; ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = L.col; ctx.lineWidth = sel? 3 : 1.5;
+    ctx.globalAlpha = sel? 1 : 0.45; ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 34px "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = sel? '#ffffff' : L.col;
+    ctx.fillText(L.name, x+bw/2, y0+66);
+    ctx.font = '13px Consolas, sans-serif'; ctx.fillStyle = '#8f9bc0';
+    ctx.fillText('按 ' + (i+1) + ' 键', x+bw/2, y0+86);
+    for(let k=0;k<4;k++){                                  // 强度条
+      ctx.fillStyle = k<=i? L.col : 'rgba(255,255,255,0.12)';
+      rr(x+bw/2-46+k*24, y0+96, 18, 8, 4); ctx.fill();
+    }
+    ctx.font = '13px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#c3cde8';
+    L.desc.forEach((s,k)=> ctx.fillText(s, x+bw/2, y0+134+k*22));
+    if(sel){
+      ctx.font = 'bold 13px "Microsoft YaHei", sans-serif'; ctx.fillStyle = L.col;
+      ctx.fillText('当 前 选 择', x+bw/2, y0+bh-14);
+    }
+  });
+  ctx.textAlign = 'center';
+  ctx.font = '15px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#6f7ba0';
+  ctx.fillText('点一张卡 或 按 1~4 直接开始　·　ESC 返回标题', W/2, 496);
 }
 function drawKO(t){
   ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fillRect(0,0,W,H);
@@ -4328,9 +4526,13 @@ function drawKO(t){
     if(players[0].wins>=2 || players[1].wins>=2){
       const w = players[0].wins>=2? '玩家 1（P1）' : (vsCPU? '人 机（CPU）':'玩家 2（P2）');
       ctx.font='bold 40px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#ffd24a';
-      ctx.fillText(w+' 获 得 最 终 胜 利 !', W/2, 380);
+      ctx.fillText(w+' 获 得 最 终 胜 利 !', W/2, 372);
+      if(vsCPU && aiLevel>=2){                       // 计时模式：显示本次通关用时
+        ctx.font='bold 20px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#8fe6ff';
+        ctx.fillText(lbMsg || ('本次通关用时 ' + fmtT(runMs/1000) + '　·　已记入 ' + CHARS[picks[0]].name + ' 榜'), W/2, 414);
+      }
       ctx.font='20px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#aab6d8';
-      ctx.fillText('按 R 重新开始　·　按 T 返回模式选择', W/2, 440);
+      ctx.fillText('按 R 重新开始　·　按 T 返回模式选择', W/2, 448);
     } else {
       ctx.font='24px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#aab6d8';
       ctx.fillText('下 一 回 合 ...', W/2, 380);
@@ -4347,6 +4549,10 @@ function fitStage(){
 addEventListener('resize', fitStage); fitStage();
 
 const menuEl = document.getElementById('menu');
+const diffEl = document.getElementById('diffUI');
+const nameEl = document.getElementById('nameUI');
+const nameInputEl = document.getElementById('nameInput');
+const nameInfoEl = document.getElementById('nameInfo');
 const koEl   = document.getElementById('koUI');
 const pad1El = document.getElementById('pad1');
 const pad2El = document.getElementById('pad2');
@@ -4811,6 +5017,8 @@ function netApplyRemote(){
 function startMode(m){
   if(state!=='title') return;
   if(m===3){ state = 'net'; netSetStatus('一方创建房间，把房间码发给朋友；另一方输入房间码即可加入'); return; }
+  if(m===2){ state = 'diff'; return; }      // 人机：先选难度
+  if(m===4){ state = 'lb'; return; }         // 排行榜
   beginSelect(m);
 }
 
@@ -4821,6 +5029,7 @@ function goTitle(){
   if(state==='title') return;
   netClose();
   clash = null;
+  nameEl.classList.add('hide');        // 回标题时收起登记框
   state = 'title';
   selState = null;
   players = [makePlayer(0), makePlayer(1)];
@@ -4882,6 +5091,17 @@ addEventListener('pointercancel', e=>releaseEl(e.pointerId));
 document.querySelectorAll('.mbtn').forEach(el=>{
   el.addEventListener('pointerdown', e=>{ e.preventDefault(); startMode(+el.dataset.mode); });
 });
+/* 上榜登记：输入名字 */
+document.getElementById('nameOk').addEventListener('click', ()=>lbCommit());
+nameInputEl.addEventListener('keydown', e=>{                 // 打字时不要把按键喂给游戏
+  e.stopPropagation();
+  if(e.key === 'Enter') lbCommit();
+});
+nameInputEl.addEventListener('keyup', e=>e.stopPropagation());
+/* 人机难度：点一张卡直接开局（会记住选择） */
+document.querySelectorAll('.dbtn').forEach(el=>{
+  el.addEventListener('pointerdown', e=>{ e.preventDefault(); setAiLevel(+el.dataset.lv); beginSelect(2); });
+});
 /* 联机面板：创建 / 加入 / 复制房间码 */
 document.getElementById('netCreate').addEventListener('click', ()=>netCreate());
 document.getElementById('netJoin').addEventListener('click', ()=>netJoin(netInputEl.value));
@@ -4938,6 +5158,7 @@ function syncUI(){
   document.body.classList.toggle('cpu', vsCPU);   // 人机时把技能键甩到右边缘
   document.body.classList.toggle('netplay', net);
   menuEl.classList.toggle('hide', state!=='title');
+  if(diffEl) diffEl.classList.toggle('hide', state!=='diff');
   exitEl.classList.toggle('hide', state==='title' || state==='net');
   selEl.classList.toggle('hide', state!=='select');
   koEl.classList.toggle('hide', state!=='ko' || !over || Net.mode==='client');
@@ -4954,6 +5175,7 @@ function loop(now){
   let dt = (now-last)/16.666; last = now;
   dt = Math.min(dt, 2.5);
   const t = now;
+  if(state==='fight' && vsCPU && aiLevel>=2) runMs += dt*16.666;   // 通关计时（只计真实战斗时间）
   if(state==='fight') syncPadKeys();      // 技能图标随轮换 / 领域状态实时更新
 
   if(titleLock>0) titleLock--;
@@ -4964,6 +5186,7 @@ function loop(now){
     if(keys['Digit1']||keys['Numpad1']) sel = 1;               // 双人
     if(keys['Digit2']||keys['Numpad2']) sel = 2;               // 人机
     if(keys['Digit3']||keys['Numpad3']) sel = 3;               // 联机
+    if(keys['Digit4']||keys['Numpad4']) sel = 4;               // 排行榜
     // 返回标题时手还按着 T/R，别让它们又被当成「任意键」直接开局
     if(!sel){
       for(const k in keys){
@@ -4972,11 +5195,20 @@ function loop(now){
     }
     if(sel) startMode(sel);
   }
+  if(state==='diff' && titleLock<=0){              // 难度界面：1~4 直接选
+    let lv = -1;
+    if(keys['Digit1']||keys['Numpad1']) lv = 0;
+    if(keys['Digit2']||keys['Numpad2']) lv = 1;
+    if(keys['Digit3']||keys['Numpad3']) lv = 2;
+    if(keys['Digit4']||keys['Numpad4']) lv = 3;
+    if(lv>=0){ setAiLevel(lv); beginSelect(2); }
+  }
   if(state==='ko' && Net.mode!=='client'){        // 联机客机：回合推进由房主的快照决定
     stateTimer -= dt;
     if(stateTimer<=0){
       if(players[0].wins>=2 || players[1].wins>=2){
-        if(keys['KeyR']){ state='fight'; players.forEach(p=>p.wins=0); resetRound(); }
+        if(lbPending) lbOpenName();          // 进了前十：KO 演出结束后弹出登记框
+        if(keys['KeyR']){ state='fight'; players.forEach(p=>p.wins=0); resetRound(); lbResetRun(); }
         if(keys['KeyT']) goTitle();
       } else {
         state='fight'; resetRound();
@@ -5090,6 +5322,8 @@ function loop(now){
     drawTitle(t);
     if(state==='net'){ ctx.fillStyle='rgba(4,6,16,0.55)'; ctx.fillRect(0,0,W,H); }   // 联机面板压在标题上
   }
+  if(state==='lb') drawLB(t);
+  if(state==='diff') drawDiff(t);
   if(state==='select' && selState) drawSelect(t);
   if(state==='clash') drawClash(t);
   if(state==='ko') drawKO(t);

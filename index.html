@@ -434,7 +434,7 @@ function makePlayer(id, char){
     hp:MAX_HP, maxHp:MAX_HP, energy:35, maxEnergy:100,
     w:56, h:120,
     onGround:true, state:'idle', stateT:0,
-    atkHit:false, atkStep:0, redHold:0, charge:0, power:0,
+    atkHit:false, atkStep:0, redHold:0, charge:0, power:0, comboBuf:0,
     invul:0, stun:0, blocking:false,
     comboClock:0, comboWindow:0,  // 连击保护：被连续压制的帧数 / 脱离连招的倒计时
     coyote:0, jumpBuf:0, jumps:1, landSquash:0,
@@ -455,7 +455,7 @@ function resetRound(){
   players = [makePlayer(0, picks[0]), makePlayer(1, picks[1])];
   players[0].wins = w0; players[1].wins = w1;
   orbs = []; particles = []; beams = []; fusions = []; announcements = []; ghosts = [];
-  slashes = []; fireZones = []; dmgNums = []; clash = null;
+  slashes = []; fireZones = []; dmgNums = []; clash = null; darkPillars = [];
   shake = 0; slowmo = 1; flash = 0; camX = 0; zoom = 1; domain = null;
   bfFx = 0; bfStop = 0; bfSlow = 0;
   aiReset(); syncPadKeys();
@@ -482,6 +482,30 @@ function ring(x,y,color,maxR=120,width=6,speed=0.25){
 /* ================= 伤害 ================= */
 /* 伤害跳字：多段打击时逐个飘出（纯爱大炮命中时的 30 30 30 就是它） */
 let dmgNums = [];
+/* 咒言命中的黑色光柱：敌人周围竖直压下的黑柱＋咒言色的描边 */
+let darkPillars = [];
+function darkPillar(x){ darkPillars.push({ x, t:0, max:32, w:86 }); netFx([4, Math.round(x)]); }
+function drawDarkPillars(){
+  for(let i=darkPillars.length-1;i>=0;i--){
+    const q = darkPillars[i]; q.t++;
+    if(q.t > q.max){ darkPillars.splice(i,1); continue; }
+    const a  = q.t<5? q.t/5 : 1-(q.t-5)/(q.max-5);
+    const w  = q.w*(0.72+0.28*Math.sin(q.t*0.45));
+    const g  = ctx.createLinearGradient(q.x-w,0,q.x+w,0);
+    g.addColorStop(0,'rgba(10,2,20,0)');
+    g.addColorStop(0.42,'rgba(8,2,14,'+(0.55*a)+')');
+    g.addColorStop(0.5 ,'rgba(3,0,8,'+(0.92*a)+')');
+    g.addColorStop(0.58,'rgba(8,2,14,'+(0.55*a)+')');
+    g.addColorStop(1,'rgba(10,2,20,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(q.x-w, 40, w*2, GROUND-40);
+    ctx.fillStyle = 'rgba(255,138,224,'+(0.5*a)+')';               // 咒言粉紫描边
+    ctx.fillRect(q.x-w-3, 40, 3, GROUND-40);
+    ctx.fillRect(q.x+w, 40, 3, GROUND-40);
+    ctx.fillStyle = 'rgba(255,138,224,'+(0.3*a)+')';
+    ctx.beginPath(); ctx.ellipse(q.x, GROUND, w*0.8, 10, 0, 0, 7); ctx.fill();
+  }
+}
 function showDmg(x, y, txt, col, size){
   dmgNums.push({ x, y, vx:rand(-0.9,0.9), vy:rand(-2.7,-1.7), txt:String(txt),
                  col:col||'#ffffff', life:52, max:52, size:size||17 });
@@ -1267,6 +1291,7 @@ function castMimic(p){
     shake = Math.max(shake, 14); hitStop = Math.max(hitStop, 5);
   } else {                                            // 咒言
     if(foe.hp>0){ foe.stun = Math.max(foe.stun, 110); foe.vx *= 0.3; }
+    darkPillar(foe.x);                                // 黑色光柱罩住敌人：咒言命中的宣告
     announce('咒 言 · 不 动 !', 52, '#ff8ae0', '「闭嘴。」');
     ring(foe.x, foe.y-60, '#ff8ae0', 120, 5);
     spawnParticles(foe.x, foe.y-60, 16, '#ff8ae0', 5, 22, 4);
@@ -1761,24 +1786,27 @@ function updatePlayer(p, foe, k){
     else p.vx *= 0.84;
 
     if(p.stateT===active && !p.atkHit){
-      const ax = p.x + p.facing*(stp===1?52:(stp===2?56:58));
       const ay = p.y - p.h*0.55;
       const rx = stp===3? 68 : 62, ry = stp===3? 90 : 72;
-      if(foe.hp>0 && foe.invul<=0 && Math.abs(foe.x-ax)<rx && Math.abs((foe.y-foe.h*0.5)-ay)<ry){
+      // 拳风以自身为中心，左右两侧都能打到（转身也不怕）
+      if(foe.hp>0 && foe.invul<=0 && Math.abs(foe.x-p.x)<rx+26 && Math.abs((foe.y-foe.h*0.5)-ay)<ry){
         const d  = stp===1? 5 : (stp===2? 6 : 11);
         // 前两段击退很小，保证连段能接上；第三段才是挑空终结
         const kb = stp===1? 1.2 : (stp===2? 1.6 : 8);
         const must = mustBlackFlash(p);      // 无名领域内：必定黑闪
-        if(must || Math.random()<BLACK_FLASH_RATE) blackFlash(p, foe, d, ax, ay, stp, must);
+        if(must || Math.random()<BLACK_FLASH_RATE) blackFlash(p, foe, d, foe.x, ay, stp, must);
         else damage(p, foe, d, p.facing*kb, stp===3?10:0.5, stp===3?26:18, 'punch');
-        ring(ax, ay, '#ffffff', stp===3?110:70, 5);
-        spawnParticles(ax, ay, stp===3?16:9, '#ffffff', 6, 22, 4, 0.3);
+        ring(foe.x, ay, '#ffffff', stp===3?110:70, 5);
+        spawnParticles(foe.x, ay, stp===3?16:9, '#ffffff', 6, 22, 4, 0.3);
         p.atkHit = true;
       }
       p.atkHit = true;
     }
-    // 连段：命中或挥空后都能接下一段
-    if(p.stateT>active+1 && stp<3 && K.punchP){
+    // 连段：命中或挥空后都能接下一段；提前按拳有 12 帧输入缓冲，连段更跟手
+    if(K.punchP && stp<3) p.comboBuf = 12;
+    if(p.comboBuf > 0) p.comboBuf--;
+    if(p.stateT>active+1 && stp<3 && p.comboBuf>0){
+      p.comboBuf = 0;
       consume(k.punch, k.punch2);
       p.atkStep = stp+1; p.stateT = 0; p.atkHit = false;
     }
@@ -3250,6 +3278,54 @@ function drawEffects(t){
   }
 }
 
+/* ============ 底部技能键位条（未开触屏时显示）============
+   照参考样式：横排卡片＝技能名 + 按键；冷却/咒力不足时变暗；
+   术式被封禁时整排变灰并显示「封 禁」。触屏玩家用屏幕按钮，不画。  */
+function keyName(c){
+  if(!c) return '';
+  if(c === 'Space') return '空格';
+  if(c === 'Slash') return '÷';
+  if(c === 'NumpadDecimal') return 'Del';
+  return c.replace('Key','').replace('Numpad','').replace('Digit','');
+}
+function drawSkillBars(){
+  if(typeof touchOn !== 'undefined' && touchOn) return;   // 开着触屏按钮就不画键位条
+  for(const p of players){
+    const CH = CHARS[p.char], left = p.id===0, items = [];
+    const kk = left? sk=>sk.p1 : sk=>sk.p2;
+    CH.skills.forEach((sk,i)=>{
+      let name = sk.short;
+      if(i===2 && p.char==='yuta') name = curMimic(p).short;        // 模仿术式名随轮换变
+      if(i===3 && p.char==='yuta' && inAiAi(p)) name = '纯爱大炮';   // 领域内 R → 大炮
+      items.push({ name, key:keyName(kk(sk)), col:sk.col, cost:sk.cost, cd:sk.cd,
+        sealed: p.seal>0, ready: p.seal<=0 && p.energy>=sk.cost && (!sk.cd || p.cd[sk.cd]<=0),
+        cdT: (!sk.cd || p.seal>0)? 0 : p.cd[sk.cd] });
+    });
+    items.push({ name:'普 攻', key:keyName(p.id===0?'KeyJ':'Numpad0'), col:'#9fb0d8', cost:0, cd:null,
+      sealed:false, ready:true, cdT:0 });
+    items.push({ name:'闪 避', key:keyName(p.id===0?'Space':'Slash'), col:'#6fd8c8', cost:0, cd:'dodge',
+      sealed:false, ready:p.cd.dodge<=0, cdT:p.cd.dodge });
+    const bw = 92, bh = 52, gap = 8;
+    const x0 = left? 28 : W-28-(items.length*bw+(items.length-1)*gap);
+    const y0  = H - bh - 14;
+    items.forEach((it,i)=>{
+      const x = x0 + i*(bw+gap);
+      ctx.fillStyle = it.ready? 'rgba(16,22,44,0.85)' : 'rgba(14,17,32,0.72)';
+      rr(x, y0, bw, bh, 9); ctx.fill();
+      ctx.strokeStyle = it.ready? it.col : 'rgba(110,120,150,0.38)';
+      ctx.lineWidth = 2; rr(x, y0, bw, bh, 9); ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 17px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = it.ready? '#eef4ff' : '#5a6484';
+      ctx.fillText(it.sealed? '封 禁' : it.name, x+bw/2, y0+24);
+      ctx.font = 'bold 13px Consolas, monospace';
+      ctx.fillStyle = it.ready? it.col : '#4a5578';
+      ctx.fillText(it.cdT>0? (it.cdT/60).toFixed(1)+'s' : it.key, x+bw/2, y0+44);
+    });
+  }
+  ctx.textAlign = 'left';
+}
+
 /* ================= HUD ================= */
 function drawHUD(t){
   ctx.save();
@@ -3922,7 +3998,7 @@ function drawClash(t){
   ctx.font = 'bold 22px Consolas, monospace';
   ctx.fillStyle = left < 1.2? '#ff8090' : '#ffd77a';
   ctx.fillText(left.toFixed(1) + 's', W/2, 344);
-  const tip = (typeof isTouchDev !== 'undefined' && isTouchDev)
+  const tip = (typeof touchOn !== 'undefined' && touchOn)
     ? '疯狂点击屏幕！把咒力灌进自己的领域'
     : (vsCPU || Net.mode !== 'off')? '连按 空格 注入咒力！'
     : 'P1 连按 空格　·　P2 连按 ÷';
@@ -4701,6 +4777,7 @@ function netApplySnap(s){
     else if(f[0] === 1) ring(f[1], f[2], f[3], f[4], f[5], f[6]);
     else if(f[0] === 2) announce(f[1], f[2], f[3], f[4]);
     else if(f[0] === 3) showDmg(f[1], f[2], f[3], f[4], f[5]);
+    else if(f[0] === 4) darkPillars.push({ x:f[1], t:0, max:32, w:86 });
   }
   shake = Math.max(shake, s.sh || 0);
   flash = Math.max(flash, s.fl || 0);
@@ -4748,7 +4825,7 @@ function goTitle(){
   selState = null;
   players = [makePlayer(0), makePlayer(1)];
   orbs = []; particles = []; beams = []; fusions = []; announcements = []; ghosts = [];
-  dmgNums = [];
+  dmgNums = []; darkPillars = [];
   shake = 0; slowmo = 1; flash = 0; camX = 0; zoom = 1; hitStop = 0; domain = null;
   aiReset();
   // 清掉残留输入（含虚拟按键），否则回标题瞬间就会被「任意键」直接开局
@@ -4980,6 +5057,7 @@ function loop(now){
   drawSlashes(t);
   drawFireZones(t);
   drawGhosts();
+  drawDarkPillars();
   drawChar(players[0], t);
   drawChar(players[1], t);
   drawFusions(t);
@@ -5007,6 +5085,7 @@ function loop(now){
   }
 
   if(state!=='select') drawHUD(t);
+  if(state==='fight'||state==='ko') drawSkillBars();
   if(state==='title' || state==='net'){
     drawTitle(t);
     if(state==='net'){ ctx.fillStyle='rgba(4,6,16,0.55)'; ctx.fillRect(0,0,W,H); }   // 联机面板压在标题上

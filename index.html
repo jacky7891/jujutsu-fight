@@ -1711,12 +1711,12 @@ function updatePlayer(p, foe, k){
   }
   /* ---------- 突刺：向前突刺，命中则填充术式 ---------- */
   else if(p.state==='thrust'){
-    if(p.stateT<5) p.vx *= 0.4;                       // 蓄势
-    else if(p.stateT<16) p.vx = p.facing*17;          // 突进
-    else p.vx *= 0.75;
-    const ax = p.x + p.facing*54, ay = p.y - p.h*0.55;
-    if(!p.thrustHit && p.stateT>=5 && foe.hp>0 && foe.invul<=0 &&
-       Math.abs(foe.x-ax)<58 && Math.abs((foe.y-foe.h*0.5)-ay)<94){
+    if(p.stateT<4) p.vx *= 0.4;                       // 蓄势（更短，出手更跟手）
+    else if(p.stateT<20) p.vx = p.facing*(p.thrustHit? 11 : 19);  // 空冲约 300px；刺到人立刻收势，不会从人身上穿过去
+    else p.vx *= 0.72;
+    const ax = p.x + p.facing*58, ay = p.y - p.h*0.55;
+    if(!p.thrustHit && p.stateT>=4 && foe.hp>0 && foe.invul<=0 &&
+       Math.abs(foe.x-ax)<64 && Math.abs((foe.y-foe.h*0.5)-ay)<100){
       p.thrustHit = true;
       damage(p, foe, THRUST_DMG, p.facing*8, 3, 30, 'punch');
       addStock(p, 1);                                 // 命中 → 储存一个术式
@@ -1724,28 +1724,41 @@ function updatePlayer(p, foe, k){
       ring(ax, ay, '#7fd0ff', 90, 4);
       spawnParticles(ax, ay, 12, '#7fd0ff', 5, 20, 4, 0.2);
     }
-    if(p.stateT>26) p.state='idle';
+    if(p.stateT>25) p.state='idle';
+    // 取消手感：突刺末段可用闪避 / 跳跃收招，也能直接接技能打连段
+    if(p.stateT>=18){
+      if(K.dodgeP) tryDodge(p, K);
+      else if(K.upP && p.onGround){ consume(k.up); p.state='idle'; doJump(p,false); }
+      else if(p.stateT>20) trySkills(p, k, K);
+    }
   }
-  /* ---------- 袈裟斬：踏步前冲，斜劈一刀 ---------- */
+  /* ---------- 袈裟斬：大幅踏步前冲，斜劈一刀 ---------- */
   else if(p.state==='kesaSlash'){
-    if(p.stateT<6) p.vx = p.facing*10;                // 踏步
-    else if(p.stateT<13) p.vx *= 0.85;                // 挥砍
-    else p.vx *= 0.7;
+    const s = p.kesaHit? 4 : 10;                      // 砍到就不继续踏步，避免贴脸时冲过头
+    if(p.stateT<9) p.vx = p.facing*21*s/10;           // 踏步位移：约 190px
+    else if(p.stateT<13) p.vx = p.facing*10*s/10;     // 挥砍时再压一步
+    else p.vx *= 0.72;
     const ax = p.x + p.facing*62, ay = p.y - p.h*0.5;
-    if(!p.kesaHit && p.stateT===9 && foe.hp>0 && foe.invul<=0 &&
-       Math.abs(foe.x-ax)<96 && Math.abs((foe.y-foe.h*0.5)-ay)<136){
+    if(!p.kesaHit && p.stateT>=6 && p.stateT<=17 && foe.hp>0 && foe.invul<=0 &&
+       Math.abs(foe.x-ax)<104 && Math.abs((foe.y-foe.h*0.5)-ay)<140){
       p.kesaHit = true;
       damage(p, foe, KESA_DMG, p.facing*13, 6, 44, 'cleave');
       shake = Math.max(shake, 14); hitStop = Math.max(hitStop, 5);
       ring(ax, ay, '#dce8ff', 110, 5);
       spawnParticles(ax, ay, 18, '#dce8ff', 6, 26, 4, 0.2);
     }
-    if(p.stateT>30) p.state='idle';
+    if(p.stateT>28) p.state='idle';
+    // 取消手感：砍完之后同样可以闪避 / 跳跃 / 接技能
+    if(p.stateT>=20){
+      if(K.dodgeP) tryDodge(p, K);
+      else if(K.upP && p.onGround){ consume(k.up); p.state='idle'; doJump(p,false); }
+      else if(p.stateT>22) trySkills(p, k, K);
+    }
   }
   /* ---------- 术式模仿：释放后摇 ---------- */
   else if(p.state==='mimicFire'){
     p.vx *= 0.8;
-    if(p.stateT>30) p.state='idle';
+    if(p.stateT>24) p.state='idle';                  // 后摇更短，打完能马上接突刺 / 袈裟斬
   }
   /* ---------- 纯爱大炮：起手凝聚 → 迸发 → 持续喷射 → 收束 ---------- */
   else if(p.state==='cannonFire'){
@@ -1772,8 +1785,8 @@ function updatePlayer(p, foe, k){
         const dmg = 1 + Math.round(p.cannonHits*0.35);   // 越到后面越疼
         p.cannonHits++;
         const hy = foe.y - foe.h*0.55;
-        showDmg(foe.x + rand(-28,28), hy + rand(-36,8), dmg,
-                Math.random()<0.3? '#ffd24a' : '#ffffff', 15 + blast*8);   // 30 30 30 式跳字
+        showDmg(foe.x + rand(-34,34), hy + rand(-44,10), dmg,
+                Math.random()<0.55? '#ffd24a' : '#ffffff', 17 + blast*9);  // 30 30 30 式跳字（金色更密）
         damage(p, foe, dmg, p.facing*(0.8 + blast*2.2), 1.5, 14, 'cannon');
         /* —— 打击感：顿帧 + 白闪 + 震屏峰值 + 双层冲击环 + 迸溅 + 光柱被顶得胀一下 —— */
         hitStop = 2 + Math.round(blast*2);   // 多段攻击：直接覆盖 damage 的默认 6 帧，避免每段都顿太久
@@ -2782,7 +2795,7 @@ function drawYuta(p, t){
     ctx.fillText('下一个 · ' + mi.name + (cd>0? '（' + Math.ceil(cd/60) + 's）' : ''), x, headY - 46);
   }
   /* ---------- 突刺：白色速度线 ---------- */
-  if(st==='thrust' && p.stateT>=5 && p.stateT<17){
+  if(st==='thrust' && p.stateT>=4 && p.stateT<21){
     for(let i=0;i<3;i++){
       const yy = y - p.h*0.32 - i*26;
       ctx.strokeStyle='rgba(255,255,255,'+(0.55 - i*0.13)+')'; ctx.lineWidth=3;
@@ -2790,8 +2803,8 @@ function drawYuta(p, t){
     }
   }
   /* ---------- 袈裟斬：斜劈的刀光 ---------- */
-  if(st==='kesaSlash' && p.stateT>=7 && p.stateT<19){
-    const k = (p.stateT-7)/12;
+  if(st==='kesaSlash' && p.stateT>=9 && p.stateT<21){
+    const k = (p.stateT-9)/12;
     ctx.save();
     ctx.translate(x, y - p.h*0.5);
     ctx.rotate(f>0? (-0.55 + k*1.7) : (0.55 - k*1.7));
@@ -3151,8 +3164,8 @@ function drawBeams(t, tick){
       const grow = Math.min(1, k/0.62);                        // 前 62% 时长一路张开
       const fade = k>0.86? clamp(1-(k-0.86)/0.14, 0, 1) : 1;   // 末尾收束
       const pu   = b.pulse || 0;                               // 命中冲击：整束胀一下
-      const R1   = (7 + grow*7) * fade;                        // 炮口半高
-      const R2   = (64 + grow*52) * fade * (1 + pu*0.16);      // 远端半高（锥形张开）
+      const R1   = (8 + grow*8) * fade;                        // 炮口半高
+      const R2   = (78 + grow*64) * fade * (1 + pu*0.16);      // 远端半高（大幅张开，横贯感）
       /* 整束的紫色辉光（锥形底层） */
       ctx.beginPath();
       ctx.moveTo(bx, by - R1*1.9); ctx.lineTo(ex, by - R2*1.7);
@@ -3163,46 +3176,60 @@ function drawBeams(t, tick){
       g0.addColorStop(0.5,'rgba(190,155,255,'+(0.22*a*fade)+')');
       g0.addColorStop(1,'rgba(150,110,255,'+(0.10*a*fade)+')');
       ctx.fillStyle = g0; ctx.fill();
-      /* 中心亮带：几条核心丝合成的白炽光带（参考图里束心最亮） */
+      /* 中心亮带：白炽光芯（束心最亮最粗），外圈再裹一层淡紫 */
       ctx.beginPath();
-      ctx.moveTo(bx, by - R1*0.75); ctx.lineTo(ex, by - R2*0.34);
-      ctx.lineTo(ex, by + R2*0.34); ctx.lineTo(bx, by + R1*0.75);
+      ctx.moveTo(bx, by - R1*0.95); ctx.lineTo(ex, by - R2*0.46);
+      ctx.lineTo(ex, by + R2*0.46); ctx.lineTo(bx, by + R1*0.95);
       ctx.closePath();
       const gc = ctx.createLinearGradient(bx, 0, ex, 0);
       gc.addColorStop(0,'rgba(255,255,255,'+(0.95*a*fade)+')');
-      gc.addColorStop(0.55,'rgba(246,240,255,'+(0.70*a*fade)+')');
-      gc.addColorStop(1,'rgba(226,210,255,'+(0.42*a*fade)+')');
+      gc.addColorStop(0.55,'rgba(248,242,255,'+(0.74*a*fade)+')');
+      gc.addColorStop(1,'rgba(228,212,255,'+(0.46*a*fade)+')');
       ctx.fillStyle = gc; ctx.fill();
-      /* 二十四条光丝：中心几条笔直白亮，外围散开、弯曲、随风飘动 */
-      const STR = 24;
+      /* 三十条扭动的光丝：正弦缠绕出「麻花辫」般的交织感，越远扭得越开 */
+      const STR = 30;
       const rnd = (i)=>{ const s = Math.sin(i*127.1 + 311.7)*43758.5453; return s - Math.floor(s); };
       ctx.lineCap = 'round';
+      const SEG = 14;
       for(let i=0;i<STR;i++){
         const u  = (i/(STR-1))*2 - 1;                            // -1..1（上缘→下缘）
         const c  = rnd(i);                                       // 每条丝的「个性」
-        const y0 = by + u*R1*(0.55 + c*0.5);
-        const y1 = by + u*R2*(0.82 + c*0.36);
-        const bend = Math.sin(t*0.05 + i*1.9 + c*6.28) * R2*(0.16 + c*0.30) * (u<0? -1 : 1);
-        const flick = 0.75 + 0.25*Math.sin(t*0.4 + i*2.3);       // 亮度呼吸
-        const core = Math.abs(u) < 0.3;
+        const y0 = by + u*R1*(0.5 + c*0.4);
+        const y1 = by + u*R2*(0.86 + c*0.3);
+        const ph = c*6.28 + (i%3)*2.1;                           // 三组相位错开 → 交织打辫
+        const fr = 4.5 + c*3.5;                                  // 每条丝的扭动频率
+        const wo = t*(0.055 + c*0.05);                           // 扭动速度：整束在「蠕动」
+        const amp = R2*(0.15 + c*0.28);                          // 扭动幅度
+        const flick = 0.7 + 0.3*Math.sin(t*0.4 + i*2.3);         // 亮度呼吸
+        const core = Math.abs(u) < 0.26;
         ctx.beginPath();
-        ctx.moveTo(bx + d2*4, y0);
-        ctx.quadraticCurveTo(bx + (ex-bx)*0.45, (y0+y1)/2 + bend, ex, y1);
-        ctx.strokeStyle = core? 'rgba(255,255,255,'+(0.42*a*flick)+')' : 'rgba(214,190,255,'+(0.30*a*flick)+')';
-        ctx.lineWidth = core? 9 : 6.5;                           // 辉光层
+        for(let s2=0;s2<=SEG;s2++){
+          const p2 = s2/SEG;
+          const yy = y0 + (y1-y0)*p2 + Math.sin(p2*fr*3.14 + ph + wo)*amp*p2*(0.3+p2*0.7);
+          const xx = bx + (ex-bx)*p2;
+          if(s2===0) ctx.moveTo(xx,yy); else ctx.lineTo(xx,yy);
+        }
+        ctx.strokeStyle = core? 'rgba(255,255,255,'+(0.40*a*flick)+')' : 'rgba(214,190,255,'+(0.26*a*flick)+')';
+        ctx.lineWidth = core? 10 : 7;                            // 辉光层
         ctx.stroke();
         ctx.strokeStyle = core? 'rgba(255,255,255,'+(0.98*a*flick)+')'
-          : (c>0.6? 'rgba(244,236,255,'+(0.92*a*flick)+')' : 'rgba(212,184,255,'+(0.80*a*flick)+')');
-        ctx.lineWidth = core? 4.2 : 2.2 + c*1.6;                 // 亮线层
+          : (c>0.55? 'rgba(246,238,255,'+(0.94*a*flick)+')' : 'rgba(210,180,255,'+(0.8*a*flick)+')');
+        ctx.lineWidth = core? 4.6 : 2 + c*1.8;                   // 亮线层
         ctx.stroke();
       }
-      /* 偶尔一条丝爆亮（扫过整束） */
-      {
-        const i = Math.floor((t*0.02) % STR), u = (i/(STR-1))*2 - 1;
+      /* 三条「爆亮丝」：白炽闪电般扫过整束（交替爆闪） */
+      for(let j=0;j<3;j++){
+        const i = (Math.floor(t*0.03) + j*7) % STR, u = (i/(STR-1))*2 - 1, c = rnd(i);
+        const y0 = by + u*R1*0.6, y1 = by + u*R2*0.9;
         ctx.beginPath();
-        ctx.moveTo(bx, by + u*R1);
-        ctx.quadraticCurveTo(bx + (ex-bx)*0.45, by + u*R2*0.55, ex, by + u*R2);
-        ctx.strokeStyle = 'rgba(255,255,255,'+(0.9*a)+')'; ctx.lineWidth = 2.4; ctx.stroke();
+        for(let s2=0;s2<=10;s2++){
+          const p2 = s2/10;
+          const yy = y0 + (y1-y0)*p2 + Math.sin(p2*9 + c*6.28 + t*0.12)*R2*0.2*p2;
+          const xx = bx + (ex-bx)*p2;
+          if(s2===0) ctx.moveTo(xx,yy); else ctx.lineTo(xx,yy);
+        }
+        ctx.strokeStyle = 'rgba(255,255,255,'+(0.85*a*(0.45+0.55*Math.abs(Math.sin(t*0.35+j*2))))+')';
+        ctx.lineWidth = 2.6; ctx.stroke();
       }
       /* 远端：炸开的紫白光斑 */
       const cr = (34 + grow*70) * fade * (1 + pu*0.3);

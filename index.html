@@ -7,7 +7,13 @@
   * { margin:0; padding:0; box-sizing:border-box; }
   html,body { width:100%; height:100%; background:#05060f; overflow:hidden;
     font-family:"Microsoft YaHei","PingFang SC",sans-serif;
-    touch-action:none; user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent; }
+    touch-action:none; user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent;
+    /* 手机端按键尺寸：随屏幕高度自适应，横屏也不会占满屏幕挡住画面 */
+    --joy:min(188px, 40vh);        /* 摇杆直径 */
+    --btn:min(84px, 17vh);         /* 技能按钮直径 */
+    --bar:min(50px, 10.5vh);       /* 领域 / 闪避 横条高度 */
+    --gap:min(14px, 2.4vh);        /* 按键间距 */
+    --fs:min(24px, 4.6vh);         /* 技能按钮字号 */ }
   #wrap { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
   #stage { position:relative; width:1280px; height:720px; transform-origin:50% 50%; }
   canvas { display:block; width:1280px; height:720px; background:#0a0d1c;
@@ -93,26 +99,21 @@
   .pad { display:none; }
   body.touchUI .pad { display:contents; }
   body.touchUI .pad.hide { display:none; }
-  .pad .dpad, .pad .acts { position:fixed; bottom:24px; z-index:20; }
-  /* 双人时：两组各占半屏；人机时：摇杆镇左、技能甩到右边缘 */
-  #pad1 .dpad { left:20px; }   #pad1 .acts { left:234px; }
-  #pad2 .dpad { right:206px; } #pad2 .acts { right:20px; }
-  body.cpu #pad1 .acts { left:auto; right:24px; }
-  .dpad { position:relative; width:198px; height:198px; touch-action:none; }
-  .dpad .joy { width:198px; height:198px; display:block; touch-action:none; }
-  .acts { display:grid; grid-template-columns:repeat(2,80px); gap:14px; }
-  .btn { width:66px; height:66px; border-radius:50%; touch-action:none;
-    border:2px solid rgba(255,255,255,.32); color:#e8f0ff; font-size:20px; font-weight:bold;
+  .pad .dpad, .pad .acts { position:fixed; bottom:max(10px, 3.5vh); z-index:20; }
+  /* 每人都一样：摇杆在自己那半屏的左边，技能在右边；双人各占半屏，互不打架 */
+  #pad1 .dpad { left:max(10px, 2vw); }   #pad1 .acts { right:54vw; }
+  #pad2 .dpad { left:56vw; }             #pad2 .acts { right:max(10px, 2vw); }
+  body.cpu #pad1 .acts { right:max(10px, 2vw); }   /* 人机只有一组：摇杆镇左、技能贴右边缘 */
+  .dpad { position:relative; width:var(--joy); height:var(--joy); touch-action:none; }
+  .dpad .joy { width:100%; height:100%; display:block; touch-action:none; }
+  .acts { display:grid; grid-template-columns:repeat(2, var(--btn)); gap:var(--gap); }
+  .btn { width:var(--btn); height:var(--btn); border-radius:50%; touch-action:none;
+    border:2px solid rgba(255,255,255,.32); color:#e8f0ff; font-size:min(20px, 3.9vh); font-weight:bold;
     background:rgba(26,36,70,.6); display:flex; flex-direction:column;
     align-items:center; justify-content:center; line-height:1.05;
     box-shadow:0 3px 14px rgba(0,0,0,.5); }
-  .dpad .btn { position:absolute; }
-  .dpad .up    { left:66px;  top:0; }
-  .dpad .left  { left:0;     top:66px; }
-  .dpad .right { left:132px; top:66px; }
-  .dpad .down  { left:66px;  top:132px; }
-  .acts .btn { width:80px; height:80px; font-size:24px; }
-  .acts .btn.dmn { grid-column:1 / -1; width:auto; height:54px; border-radius:16px; }
+  .acts .btn { width:var(--btn); height:var(--btn); font-size:var(--fs); }
+  .acts .btn.dmn { grid-column:1 / -1; width:auto; height:var(--bar); border-radius:16px; }
   .btn.up    { background:rgba(60,90,160,.55); }
   .btn.down  { background:rgba(70,80,120,.55); }
   .btn.punch { background:rgba(150,160,190,.5); }
@@ -120,7 +121,7 @@
   .btn.red   { background:rgba(190,45,70,.55);   border-color:rgba(255,120,130,.7); }
   .btn.hollow{ background:rgba(120,45,200,.55);  border-color:rgba(200,120,255,.7); }
   .btn.dmn   { background:rgba(150,110,20,.55);  border-color:rgba(255,210,74,.8); }
-  .btn.dodge { grid-column:1 / -1; width:auto; height:46px; border-radius:14px;
+  .btn.dodge { grid-column:1 / -1; width:auto; height:calc(var(--bar) * .84); border-radius:14px;
     background:rgba(40,110,120,.6); border-color:rgba(140,230,215,.75); }
   .btn.on { transform:scale(.9); background:rgba(120,180,255,.8); color:#fff; }
   .btn .sub { display:block; font-size:9px; opacity:.75; margin-top:1px; }
@@ -201,20 +202,20 @@
     <canvas class="joy" width="198" height="198"></canvas>
   </div>
   <div class="acts">
-    <button class="btn punch"  data-key="KeyJ">拳</button>
     <button class="btn blue"   data-slot="0" data-key="KeyQ">苍</button>
     <button class="btn red"    data-slot="1" data-key="KeyE">赫</button>
     <button class="btn hollow" data-slot="2" data-key="KeyF">茈<span class="sub">长按</span></button>
+    <button class="btn punch"  data-key="KeyJ">拳<span class="sub">三连</span></button>
     <button class="btn dmn"    data-slot="3" data-key="KeyG">领<span class="sub">领域</span></button>
     <button class="btn dodge"  data-key="Space">闪<span class="sub">闪避 · 无敌</span></button>
   </div>
 </div>
 <div class="pad" id="pad2">
   <div class="acts">
-    <button class="btn punch"  data-key="Numpad0">拳</button>
     <button class="btn blue"   data-slot="0" data-key="Numpad1">苍</button>
     <button class="btn red"    data-slot="1" data-key="Numpad2">赫</button>
     <button class="btn hollow" data-slot="2" data-key="Numpad3">茈<span class="sub">长按</span></button>
+    <button class="btn punch"  data-key="Numpad0">拳<span class="sub">三连</span></button>
     <button class="btn dmn"    data-slot="3" data-key="Numpad4">领<span class="sub">领域</span></button>
     <button class="btn dodge"  data-key="Slash">闪<span class="sub">闪避 · 无敌</span></button>
   </div>
@@ -236,6 +237,8 @@
   苍 × 赫 交叠的「无指向茈」有 15 秒内置冷却；「解」的黑线落下前就锁定位置，走位能躲
   &nbsp;|&nbsp;
   <b>设置</b>：右上角「触屏控制」＝手机虚拟按键；「领域对抗」＝连按（疯狂点）或<b>长按</b>（按住空格 / 屏幕不放即可持续注入，简易模式），设置会记住
+  &nbsp;|&nbsp;
+  <b>手机端</b>：左下摇杆（左右＝移动 · 上＝跳 · 下拉＝防御），右侧＝拳 / 苍 / 赫 / 茈（长按）/ 领域 / 闪避
   &nbsp;|&nbsp;
   P1：A/D · W · S · J ｜ P2：←/→ · ↑ · ↓ · 0 ｜ 随时按 ESC 或点左上角「退出」返回
 </div>
@@ -4522,6 +4525,37 @@ function lbFlush(){
 }
 /* 主动放弃登记（登记框开着时再按 ESC） */
 function lbSkip(){ lbCur = null; lbPending = null; nameEl.classList.add('hide'); }
+/* 排行榜存档码：成绩存在「当前网址」下，换网址（换域名）就会看不到 —— 用存档码搬家 */
+let lbTip = null;                       // 排行榜界面的操作反馈
+function lbTipShow(text, col){ lbTip = { text, col: col||'#7fe0c0', t:180 }; }
+function lbExport(){
+  const data = {};
+  for(const ch in CHARS){ const l = lbGet(ch); if(l && l.length) data[ch] = l; }
+  if(!Object.keys(data).length){ lbTipShow('排行榜还是空的，没有可导出的成绩', '#ff8090'); return; }
+  const code = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+  let copied = false;
+  try{ if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(code); copied = true; } }catch(_){}
+  try{ prompt('复制这段存档码（' + (copied? '已复制到剪贴板；' : '') + '换网址后到排行榜按 I 粘贴导入）：', code); }catch(_){}
+  lbTipShow('存档码已生成' + (copied? '并复制到剪贴板' : '，请复制弹窗里的码'), '#7fe0c0');
+}
+function lbImport(){
+  let code = '';
+  try{ code = prompt('粘贴排行榜存档码：', '') || ''; }catch(_){}
+  code = code.trim(); if(!code){ lbTip = null; return; }      // 取消导入：不留着上一次的提示
+  try{
+    const data = JSON.parse(decodeURIComponent(escape(atob(code))));
+    let n = 0;
+    for(const ch in data){
+      if(!CHARS[ch] || !Array.isArray(data[ch])) continue;
+      const list = data[ch].filter(e=> e && typeof e.t === 'number')
+                           .map(e=>({ n:String(e.n||'无名').slice(0,8), t:+e.t, d:+e.d|0 }))
+                           .sort((a,b)=> a.t-b.t);
+      lbSave(ch, list); n += list.length;
+    }
+    if(!n){ lbTipShow('存档码里没有可用成绩', '#ff8090'); return; }
+    lbTipShow('导入成功：' + n + ' 条成绩', '#7fe0c0');
+  }catch(_){ lbTipShow('存档码无效（请完整复制）', '#ff8090'); }
+}
 function lbCommit(){
   if(!lbCur) return;
   lbAdd(lbCur.ch, nameInputEl.value, lbCur.sec);
@@ -4572,6 +4606,13 @@ function drawLB(t){
   ctx.textAlign = 'center';
   ctx.font = '15px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#6f7ba0';
   ctx.fillText('ESC 或左上角退出键 返回标题', W/2, 578);
+  ctx.font = '13px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#5c6688';
+  ctx.fillText('成绩保存在「当前网址」下 —— 换网址看不到时：按 E 导出存档码，到新网址按 I 导入', W/2, 604);
+  if(lbTip){
+    ctx.font = 'bold 15px "Microsoft YaHei", sans-serif'; ctx.fillStyle = lbTip.col;
+    ctx.fillText(lbTip.text, W/2, 634);
+    lbTip.t--; if(lbTip.t<=0) lbTip = null;
+  }
 }
 
 /* 人机难度选择 */
@@ -5163,6 +5204,10 @@ function goTitle(){
 }
 addEventListener('keydown', e=>{
   if(e.code==='Escape'){ e.preventDefault(); goTitle(); }
+  if(state==='lb'){                                  // 排行榜：E 导出存档码 / I 导入
+    if(e.code==='KeyE'){ e.preventDefault(); lbExport(); }
+    if(e.code==='KeyI'){ e.preventDefault(); lbImport(); }
+  }
 });
 exitEl.addEventListener('pointerdown', e=>{ e.preventDefault(); goTitle(); });
 

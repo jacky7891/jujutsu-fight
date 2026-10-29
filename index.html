@@ -22,10 +22,11 @@
     font-family:inherit; cursor:pointer; touch-action:none;
     background:transparent; transition:background .08s; }
   .mbtn:active { background:rgba(255,255,255,.16); }
-  #m1 { left:190px; top:556px; width:210px; height:84px; border-radius:10px; }
-  #m2 { left:420px; top:556px; width:210px; height:84px; border-radius:10px; }
-  #m3 { left:650px; top:556px; width:210px; height:84px; border-radius:10px; }
-  #m4 { left:880px; top:556px; width:210px; height:84px; border-radius:10px; }
+  #m1 { left:141px; top:556px; width:190px; height:84px; border-radius:10px; }
+  #m2 { left:343px; top:556px; width:190px; height:84px; border-radius:10px; }
+  #m3 { left:545px; top:556px; width:190px; height:84px; border-radius:10px; }
+  #m4 { left:747px; top:556px; width:190px; height:84px; border-radius:10px; }
+  #m5 { left:949px; top:556px; width:190px; height:84px; border-radius:10px; }
   .dbtn { position:absolute; pointer-events:auto; border:0; background:transparent;
     cursor:pointer; touch-action:none; transition:background .08s;
     top:250px; height:196px; width:240px; border-radius:14px; }
@@ -96,7 +97,8 @@
   #pad1 .dpad { left:20px; }   #pad1 .acts { left:234px; }
   #pad2 .dpad { right:206px; } #pad2 .acts { right:20px; }
   body.cpu #pad1 .acts { left:auto; right:24px; }
-  .dpad { position:relative; width:198px; height:198px; }
+  .dpad { position:relative; width:198px; height:198px; touch-action:none; }
+  .dpad .joy { width:198px; height:198px; display:block; touch-action:none; }
   .acts { display:grid; grid-template-columns:repeat(2,80px); gap:14px; }
   .btn { width:66px; height:66px; border-radius:50%; touch-action:none;
     border:2px solid rgba(255,255,255,.32); color:#e8f0ff; font-size:20px; font-weight:bold;
@@ -138,6 +140,7 @@
       <button class="mbtn" id="m2" data-mode="2"></button>
       <button class="mbtn" id="m3" data-mode="3"></button>
       <button class="mbtn" id="m4" data-mode="4"></button>
+      <button class="mbtn" id="m5" data-mode="5"></button>
     </div>
     <div id="diffUI" class="ov hide">
       <button class="dbtn" id="d0" data-lv="0"></button>
@@ -192,11 +195,8 @@
 </div>
 
 <div class="pad" id="pad1">
-  <div class="dpad">
-    <button class="btn up"    data-key="KeyW">跳</button>
-    <button class="btn left"  data-key="KeyA">←</button>
-    <button class="btn right" data-key="KeyD">→</button>
-    <button class="btn down"  data-key="KeyS">防</button>
+  <div class="dpad" data-pad="0">
+    <canvas class="joy" width="198" height="198"></canvas>
   </div>
   <div class="acts">
     <button class="btn punch"  data-key="KeyJ">拳</button>
@@ -216,11 +216,8 @@
     <button class="btn dmn"    data-slot="3" data-key="Numpad4">领<span class="sub">领域</span></button>
     <button class="btn dodge"  data-key="Slash">闪<span class="sub">闪避 · 无敌</span></button>
   </div>
-  <div class="dpad">
-    <button class="btn up"    data-key="ArrowUp">跳</button>
-    <button class="btn left"  data-key="ArrowLeft">←</button>
-    <button class="btn right" data-key="ArrowRight">→</button>
-    <button class="btn down"  data-key="ArrowDown">防</button>
+  <div class="dpad" data-pad="1">
+    <canvas class="joy" width="198" height="198"></canvas>
   </div>
 </div>
 
@@ -248,7 +245,7 @@ const keys = {};
 const pressBuf = {};   // 按下缓冲：保证短促点击也能触发术式，且按住不会连发
 let titleStale = {};   // 退回标题时仍按着的键：松开前不接受开局输入
 addEventListener('keydown', e => {
-  if(!keys[e.code]) pressBuf[e.code] = 5;
+  if(!keys[e.code]) pressBuf[e.code] = 7;     // 7 帧输入缓冲：招式/连段更容易接上
   keys[e.code] = true;
   if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
 });
@@ -325,9 +322,9 @@ const COMBO_GAP    = 60;    // 超过 1 秒没再挨打，就算脱离这一套�
 /* 通用闪避：突进一段距离，途中无敌 */
 const DODGE_SPEED  = 24;  // 突进速度（约 260px 位移）
 const DODGE_ACTIVE = 14;  // 突进持续帧
-const DODGE_LEN    = 21;  // 整个动作时长（后段为滑步收势）
+const DODGE_LEN    = 18;  // 整个动作时长（后段为滑步收势）
 const DODGE_IFRAME = 15;  // 无敌帧（覆盖整个突进）
-const DODGE_CD     = 72;  // 冷却
+const DODGE_CD     = 56;  // 冷却（更短：躲完能很快再躲）
 const DODGE_COST   = 6;   // 咒力消耗
 const GHOST_COL = { gojo:'#7fd0ff', sukuna:'#ff8090', yuji:'#ffb070', yuta:'#a8d8ff' };
 const STOCK_MAX   = 4;    // 里香能储存的术式上限
@@ -392,9 +389,9 @@ const CHARS = {
       { cd:'kesa',   cost:26, cdMax:KESA_CD,   label:'袈', short:'袈 裟 斬', col:'#dce8ff', p1:'E', p2:'2',
         name:'袈 裟 斬', desc:'踏步挥砍，造成高额伤害' },
       { cd:'mimic',  cost:0,  cdMax:MIMIC_CD,  label:'模', short:'术 式 模 仿', col:'#ffd24a', p1:'F', p2:'3',
-        name:'术式模仿', desc:'无需充能，5 秒冷却；按 咒言 → 宇守罗弹 → 雅各布天梯 依次轮换打出（领域内冷却减半）' },
+        name:'术式模仿', desc:'无需充能，5 秒冷却；按 咒言 → 宇守罗弹 → 雅各布天梯 依次轮换打出（领域内无冷却，可连续打出）' },
       { cd:'domain', cost:100,cdMax:900, label:'領', short:'領 域', col:'#a8d8ff', p1:'R', p2:'4',
-        name:'领域展开 · 真 赝 相 爱', desc:'领域内冷却减半、每 5 秒填充术式；领域内再按 R 释放纯爱大炮' },
+        name:'领域展开 · 真 赝 相 爱', desc:'领域内咒力无限、模仿无冷却、其余技能冷却减半、每 5 秒填充术式；领域内再按 R 释放纯爱大炮' },
     ],
   },
 };
@@ -557,7 +554,8 @@ function drawDmgNums(){
 }
 function damage(att, def, dmg, kb, kbY, stun, type){
   if(def.hp<=0) return;
-  if(vsCPU){                                   // 人机难度：疯狂 / 地狱 有伤害与抗性加成
+  if(training) dmg = Math.min(dmg, Math.max(0, def.hp-1));   // 训练场：打不死，方便一直试技能
+  if(vsCPU && !training){                      // 人机难度：疯狂 / 地狱 有伤害与抗性加成
     const L = aiLv();
     if(att && att.id === 1) dmg *= L.dmg;      // 人机打出来的
     if(def.id === 1)        dmg *= L.taken;    // 人机挨到的
@@ -1039,7 +1037,7 @@ function fireHollow(p){
 /* ================= 跳跃 ================= */
 // 二段跳＝五条悟的空中踏步（无下限咒术）
 function doJump(p, air){
-  p.vy = air? -13 : -14.6;
+  p.vy = air? -13.4 : -14.9;                  // 略高于原来的 -14.6：能更轻松地跳过对手
   p.onGround = false; p.coyote = 0; p.jumpBuf = 0;
   p.jumps = air? 0 : 1;
   spawnParticles(p.x, p.y, air?12:8, air?'#9fd0ff':'#3a4a6a', 3.5, 20, 3, 0.1);
@@ -1282,6 +1280,8 @@ const CANNON_LEN   = 190; // 全程约 3.2 秒
 const CANNON_END   = 24;  // 末尾收束段
 const CANNON_TICK  = 8;   // 每 8 帧一段伤害
 const CANNON_SHOTS = 16;  // 段数；伤害逐段递增（1 → 6），合计约 58
+/* 光柱时长完全跟着伤害走：最后一段伤害打完 +10 帧淡出，绝不拖尾 */
+const CANNON_SHOT  = (CANNON_SHOTS-1)*CANNON_TICK + 10;
 
 /* 纯爱大炮：真赝相爱领域的终结技 —— 里香现身，多道咒力光束贯穿全场 */
 function castCannon(p){
@@ -1316,7 +1316,7 @@ function castMimic(p){
   const foe = players[1-p.id], y = p.y - p.h*0.55;
   const kind = MIMIC_ORDER[(p.mimicIdx|0) % MIMIC_ORDER.length];
   p.mimicIdx = ((p.mimicIdx|0) + 1) % MIMIC_ORDER.length;   // 用完一个换下一个
-  p.cd.mimic = MIMIC_CD;                              // 只受冷却限制，不消耗储存术式
+  p.cd.mimic = inAiAi(p)? 0 : MIMIC_CD;               // 只受冷却限制；领域内无冷却，可连续打出
   p.state='mimicFire'; p.stateT=0;
   if(kind==='ladder'){                                // 雅各布天梯
     beams.push({ type:'ladder', x:foe.x, y, life:34, max:34 });
@@ -1516,7 +1516,8 @@ function updatePlayer(p, foe, k){
   if(p.comboWindow>0){ p.comboWindow--; p.comboClock++; } else p.comboClock = 0;
   if(p.seal>0) p.seal--;                                    // 雅各布天梯：术式封禁
   if(p.hitFlash>0) p.hitFlash--;
-  const cdhalf = inAiAi(p);                                 // 真赝相爱：技能冷却减半
+  const cdhalf = inAiAi(p);                                 // 真赝相爱：咒力无限 + 技能冷却减半
+  if(cdhalf) p.energy = 100;                                // 领域内咒力一直满，技能随便放
   for(const c in p.cd) if(p.cd[c]>0)
     p.cd[c] = Math.max(0, p.cd[c] - (cdhalf && c!=='domain'? 2 : 1));   // 领域自身 CD 不翻倍，否则能连开
   p.energy = clamp(p.energy + 0.22, 0, 100);
@@ -1527,6 +1528,7 @@ function updatePlayer(p, foe, k){
     p.state!=='hollowCharge' && p.state!=='hollowFire' &&
     p.state!=='flameCharge' && p.state!=='grabbing' && p.state!=='grabStart';
 
+  p.moving = false;                    // 本帧是否在推方向键（决定要不要施加地面摩擦）
   /* ---------- 蓄力：虚式·茈 ---------- */
   if(p.state==='hollowCharge'){
     p.charge++;
@@ -1587,11 +1589,11 @@ function updatePlayer(p, foe, k){
       if(K.left) mv -= 1;
       if(K.right) mv += 1;
       if(mv!==0){
-        const target = mv*(p.onGround? 4.2 : 4.0);
-        p.vx = p.onGround? target : p.vx + (target-p.vx)*0.2;
-        p.facing = mv;
-      } else p.vx *= p.onGround? 0.75 : 0.97;
-      if(K.upP) p.jumpBuf = 8; else if(p.jumpBuf>0) p.jumpBuf--;
+        const target = mv*(p.onGround? 5.4 : 5.0);
+        p.vx = p.onGround? target : p.vx + (target-p.vx)*0.30;
+        p.facing = mv; p.moving = true;
+      } else { p.vx *= p.onGround? 0.78 : 0.97; p.moving = false; }
+      if(K.upP) p.jumpBuf = 10; else if(p.jumpBuf>0) p.jumpBuf--;
       if(p.jumpBuf>0 && (p.onGround || p.coyote>0)){ consume(k.up); doJump(p, false); }
       else if(p.jumpBuf>0 && p.jumps>0){ consume(k.up); doJump(p, true); }
     }
@@ -1766,8 +1768,9 @@ function updatePlayer(p, foe, k){
     const T = p.stateT;
     const mx = p.x - p.facing*30, my = p.y - p.h*0.62;
     const blast = clamp((T-CANNON_OPEN)/Math.max(1, CANNON_LEN-CANNON_END-CANNON_OPEN), 0, 1);   // 迸发程度 0→1
-    if(T===2) beams.push({ type:'cannon', owner:p.id, x:mx, y:my, dir:p.facing,
-                           tx: foe.x + p.facing*230, life:CANNON_LEN, max:CANNON_LEN });
+    // 光柱与伤害同步登场、同步收尾：喷射期才出现，伤害打完立刻消失
+    if(T===CANNON_OPEN) beams.push({ type:'cannon', owner:p.id, x:mx, y:my, dir:p.facing,
+                           tx: foe.x + p.facing*230, life:CANNON_SHOT, max:CANNON_SHOT });
     if(T<CANNON_OPEN){                                   // 起手：咒力向里香汇聚
       shake = Math.max(shake, 1.5 + T*0.42);
       if(T%2===0) spawnParticles(mx, my, 3, '#d9c4ff', 2.5, 14, 3, 0.02);
@@ -1832,9 +1835,9 @@ function updatePlayer(p, foe, k){
   else if(p.state==='punch'){
     const stp = p.atkStep;
     const active = stp===1? 5 : (stp===2? 4 : 7);
-    const end    = stp===1? 15: (stp===2? 14: 24);
-    // 出拳瞬间向前微冲，手感更实
-    if(p.stateT<=3) p.vx = p.facing*(stp===1?3.2:(stp===2?4.2:6.5));
+    const end    = stp===1? 15: (stp===2? 14: 21);
+    // 出拳瞬间向前微冲，手感更实（也能更容易贴上去打第二拳）
+    if(p.stateT<=3) p.vx = p.facing*(stp===1?4.0:(stp===2?5.0:7.0));
     else p.vx *= 0.84;
 
     if(p.stateT===active && !p.atkHit){
@@ -1847,7 +1850,7 @@ function updatePlayer(p, foe, k){
         const kb = stp===1? 1.2 : (stp===2? 1.6 : 8);
         const must = mustBlackFlash(p);      // 无名领域内：必定黑闪
         if(must || Math.random()<BLACK_FLASH_RATE) blackFlash(p, foe, d, foe.x, ay, stp, must);
-        else damage(p, foe, d, p.facing*kb, stp===3?10:0.5, stp===3?26:18, 'punch');
+        else damage(p, foe, d, p.facing*kb, stp===3?10:0.5, stp===3?22:15, 'punch');   // 硬直略短，挨打后能更快还手
         ring(foe.x, ay, '#ffffff', stp===3?110:70, 5);
         spawnParticles(foe.x, ay, stp===3?16:9, '#ffffff', 6, 22, 4, 0.3);
         p.atkHit = true;
@@ -1855,7 +1858,7 @@ function updatePlayer(p, foe, k){
       p.atkHit = true;
     }
     // 连段：命中或挥空后都能接下一段；提前按拳有 12 帧输入缓冲，连段更跟手
-    if(K.punchP && stp<3) p.comboBuf = 12;
+    if(K.punchP && stp<3) p.comboBuf = 14;    // 连段预输入窗口更宽，三连更好按出来
     if(p.comboBuf > 0) p.comboBuf--;
     if(p.stateT>active+1 && stp<3 && p.comboBuf>0){
       p.comboBuf = 0;
@@ -1863,7 +1866,7 @@ function updatePlayer(p, foe, k){
       p.atkStep = stp+1; p.stateT = 0; p.atkHit = false;
     }
     // 跳跃取消：出完招可立刻起跳追击 / 撤离
-    if(p.stateT>active+2 && K.upP && p.onGround){ consume(k.up); p.state='idle'; doJump(p,false); }
+    if(p.stateT>active+1 && K.upP && p.onGround){ consume(k.up); p.state='idle'; doJump(p,false); }
     if(p.stateT>active && K.dodgeP) tryDodge(p, K);   // 闪避可以取消出拳后摇
     if(p.stateT>end){ p.state='idle'; p.atkStep=0; p.atkHit=false; }
   }
@@ -1885,6 +1888,9 @@ function updatePlayer(p, foe, k){
       spawnParticles(p.x, p.y-6, 5, '#9fb0d0', 3, 18, 3, 0.12);
     }
     if(T>DODGE_LEN) p.state='idle';
+    // 闪避末段可以直接接普攻 / 技能，躲完立刻还手
+    if(T>=12){ if(K.punchP){ consume(k.punch, k.punch2); p.state='punch'; p.stateT=0; p.atkStep=1; p.atkHit=false; }
+               else trySkills(p, k, K); }
   }
   /* ---------- 普通状态 ---------- */
   else {
@@ -1892,17 +1898,20 @@ function updatePlayer(p, foe, k){
     if(K.left) mv -= 1;
     if(K.right) mv += 1;
     if(!p.blocking){
-      // 地面响应干脆，空中保留惯性与操控
+      // 地面响应干脆（起步即满速），空中保留惯性与操控
       if(mv!==0){
-        const target = mv*(p.onGround? 4.8 : 4.4);
-        p.vx = p.onGround? target : p.vx + (target-p.vx)*0.2;
-        p.facing = mv;
+        const target = mv*(p.onGround? 5.9 : 5.2);
+        // 同向：立刻满速，跟手；反向急转：2~3 帧过渡，不会生硬地瞬间掉头
+        p.vx = p.onGround? (mv*p.vx < 0? p.vx + (target-p.vx)*0.45 : target)
+                          : p.vx + (target-p.vx)*0.30;
+        p.facing = mv; p.moving = true;
       } else {
-        p.vx *= p.onGround? 0.72 : 0.97;   // 松开后滑一小段，受击击退也能滑出去
+        p.vx *= p.onGround? 0.74 : 0.97;   // 松开后滑一小段，受击击退也能滑出去
+        p.moving = false;
       }
       p.state = p.onGround? (mv!==0?'walk':'idle') : 'jump';
       // 跳跃：缓冲 + 二段跳（起跳即消耗按键，长按不会自动吃掉二段跳）
-      if(K.upP) p.jumpBuf = 8; else if(p.jumpBuf>0) p.jumpBuf--;
+      if(K.upP) p.jumpBuf = 10; else if(p.jumpBuf>0) p.jumpBuf--;
       if(p.jumpBuf>0 && (p.onGround || p.coyote>0)){ consume(k.up); doJump(p, false); }
       else if(p.jumpBuf>0 && p.jumps>0){ consume(k.up); doJump(p, true); }
     } else { p.vx *= 0.6; p.state='block'; }
@@ -1934,7 +1943,8 @@ function updatePlayer(p, foe, k){
     if(p.coyote>0) p.coyote--;
   }
   if(p.landSquash>0) p.landSquash--;
-  if(p.onGround) p.vx *= p.landSquash>0? 0.86 : 0.84;
+  // 摩擦只在「没在推方向键」时才生效，否则会把刚设好的移动速度白白吃掉
+  if(p.onGround && !p.moving) p.vx *= p.landSquash>0? 0.90 : 0.86;
   p.x = clamp(p.x, 50, WORLD_W-50);
 
   if(p.state==='idle'||p.state==='walk') p.facing = foe.x > p.x ? 1 : -1;
@@ -3162,7 +3172,7 @@ function drawBeams(t, tick){
       if(Math.abs(ex-bx) < 60) ex = bx + d2*300;
       const k    = clamp(1 - b.life/b.max, 0, 1);
       const grow = Math.min(1, k/0.62);                        // 前 62% 时长一路张开
-      const fade = k>0.86? clamp(1-(k-0.86)/0.14, 0, 1) : 1;   // 末尾收束
+      const fade = k>0.94? clamp(1-(k-0.94)/0.06, 0, 1) : 1;   // 末尾收束（紧跟伤害结束）
       const pu   = b.pulse || 0;                               // 命中冲击：整束胀一下
       const R1   = (8 + grow*8) * fade;                        // 炮口半高
       const R2   = (78 + grow*64) * fade * (1 + pu*0.16);      // 远端半高（大幅张开，横贯感）
@@ -3354,6 +3364,19 @@ function keyName(c){
   if(c === 'NumpadDecimal') return 'Del';
   return c.replace('Key','').replace('Numpad','').replace('Digit','');
 }
+/* 训练场底部提示条 */
+function drawTrainTip(){
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 15px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = 'rgba(8,14,30,0.62)';
+  const txt = '训 练 场　·　敌人不还手　·　咒力无限　·　领域随时可开　·　按 Enter 复位　·　ESC 返回标题';
+  const w = ctx.measureText(txt).width + 34;
+  rr(W/2 - w/2, H-40, w, 28, 14); ctx.fill();
+  ctx.fillStyle = '#7fe0c0';
+  ctx.fillText(txt, W/2, H-21);
+  ctx.restore();
+}
 function drawSkillBars(){
   if(typeof touchOn !== 'undefined' && touchOn) return;   // 开着触屏按钮就不画键位条
   for(const p of players){
@@ -3451,15 +3474,15 @@ function drawHUD(t){
     ctx.fillStyle = left? '#7fb4ff':'#ff8f9c';
     ctx.fillText(CH.name+(left?' P1':(vsCPU?' CPU':' P2')), left? bx+130 : bx+444, 92);
     if(!left && vsCPU){
-      const L = aiLv();
-      ctx.font='bold 11px sans-serif'; ctx.fillStyle = L.col;
-      ctx.fillText('人 机 · ' + L.name, left? bx+16 : bx+444, 106);
+      ctx.font='bold 11px sans-serif';
+      if(training){ ctx.fillStyle = '#7fe0c0'; ctx.fillText('训 练 场', left? bx+16 : bx+444, 106); }
+      else { const L = aiLv(); ctx.fillStyle = L.col; ctx.fillText('人 机 · ' + L.name, left? bx+16 : bx+444, 106); }
     }
     // 真赝相爱：领域增益与剩余时间
     if(domain && domain.kind==='aiai' && domain.phase===2 && p.id===domain.owner){
       const remain = Math.max(0, domainHold(domain) - domain.t);
       ctx.font='bold 12px sans-serif'; ctx.textAlign='left'; ctx.fillStyle='#a8d8ff';
-      ctx.fillText('真赝相爱 ' + (remain/60).toFixed(1) + 's · 模仿术式 ×2 · 冷却减半', bx+130, 121);
+      ctx.fillText('真赝相爱 ' + (remain/60).toFixed(1) + 's · 咒力无限 · 模仿无冷却', bx+130, 121);
     }
     for(let i=0;i<p.wins;i++){
       ctx.fillStyle='#ffd24a';
@@ -3493,6 +3516,8 @@ function drawHUD(t){
 
 /* ================= 人机（CPU） ================= */
 let vsCPU = false;
+let training = false;              // 训练场：敌人站着不动、不攻击，专门试技能
+let trainHinted = false;           // 训练场开场提示是否已放过
 /* 人机四档难度：反应 / 决策间隔 / 出招欲望 / 伤害与抗性
    简单＝练手　标准＝原本的强度　疯狂＝全程压制　地狱＝贴脸猛攻 + 数值加成 */
 const AI_LEVELS = [
@@ -3558,6 +3583,7 @@ function updateAI(p, foe){
   keys.AIL = keys.AIR = keys.AID = false;
   if(ai.jumpCd>0) ai.jumpCd--;
   if(p.hp<=0 || state!=='fight'){ keys.AIH = false; return; }
+  if(training){ keys.AIH = false; return; }        // 训练场：敌人完全不还手
 
   const L = aiLv();                     // 本局难度
   const P = x => x*L.aggr;              // 出招欲望：难度越高越频繁（都受各自冷却限制）
@@ -4225,7 +4251,9 @@ const CARD = { x0:64, gap:16, w:272, h:380, y:140 };   // 四张角色卡等分�
 function beginSelect(mode){
   lbResetRun();                // 开始新的一场：通关计时清零
   nameEl.classList.add('hide');
-  vsCPU = (mode===2);
+  vsCPU = (mode===2 || mode===5);
+  training = (mode===5);
+  trainHinted = false;
   selState = { idx:[0, vsCPU?1:0], done:[false,false], timer:0, readyT:0 };
   state = 'select';
   players = [makePlayer(0, CHAR_LIST[0]), makePlayer(1, CHAR_LIST[1])];
@@ -4418,13 +4446,14 @@ function drawTitle(t){
   // 模式选择
   const pulse = 0.5+0.5*Math.sin(t*0.004);
   const modes = [
-    {x:W/2-450, key:'1', title:'双 人 对 战', sub:'P1 与 P2 同屏对打', col:'#5aa0ff'},
-    {x:W/2-220, key:'2', title:'单 人 对 战', sub:'人机 · ' + aiLv().name, col:'#ff7080'},
-    {x:W/2+10,  key:'3', title:'联 机 对 战', sub:'房间码 · 异地对战', col:'#7fe0c0'},
-    {x:W/2+240, key:'4', title:'排 行 榜',    sub:'通关计时 · 前十', col:'#ffd24a'},
+    {x:W/2-499, key:'1', title:'双 人 对 战', sub:'P1 与 P2 同屏', col:'#5aa0ff'},
+    {x:W/2-297, key:'2', title:'单 人 对 战', sub:'人机 · ' + aiLv().name, col:'#ff7080'},
+    {x:W/2-95,  key:'3', title:'联 机 对 战', sub:'房间码 · 异地', col:'#7fe0c0'},
+    {x:W/2+107, key:'4', title:'排 行 榜',    sub:'通关 · 前十', col:'#ffd24a'},
+    {x:W/2+309, key:'5', title:'训 练 场',    sub:'敌人不还手', col:'#7fe0c0'},
   ];
   for(const m of modes){
-    const w = 210, h = 84, y = 556;
+    const w = 190, h = 84, y = 556;
     rr(m.x, y, w, h, 10);
     ctx.strokeStyle = m.col; ctx.globalAlpha = 0.5+0.5*pulse; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = m.col; ctx.globalAlpha = 0.08+0.07*pulse; ctx.fill();
@@ -4439,7 +4468,7 @@ function drawTitle(t){
   }
   ctx.textAlign='center';
   ctx.font='15px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#6f7ba0';
-  ctx.fillText('（任意键 ＝ 双人对战　·　按 3 ＝ 联机　·　按 4 ＝ 排行榜）', W/2, 668);
+  ctx.fillText('（任意键 ＝ 双人对战　·　按 3 ＝ 联机　·　按 4 ＝ 排行榜　·　按 5 ＝ 训练场）', W/2, 668);
 }
 /* ================= 排行榜界面 ================= */
 let lbCur = null;                 // 正在登记的成绩
@@ -5046,6 +5075,7 @@ function startMode(m){
   if(m===3){ state = 'net'; netSetStatus('一方创建房间，把房间码发给朋友；另一方输入房间码即可加入'); return; }
   if(m===2){ state = 'diff'; return; }      // 人机：先选难度
   if(m===4){ state = 'lb'; return; }         // 排行榜
+  if(m===5) training = true;                 // 训练场
   beginSelect(m);
 }
 
@@ -5113,6 +5143,89 @@ addEventListener('pointermove', e=>{
 });
 addEventListener('pointerup',     e=>releaseEl(e.pointerId));
 addEventListener('pointercancel', e=>releaseEl(e.pointerId));
+
+/* ================= 虚拟摇杆：左右＝移动，上＝跳，下＝防御 ================= */
+const JOY_KEYS = [
+  { up:'KeyW',    left:'KeyA',       right:'KeyD',        down:'KeyS'      },   // P1
+  { up:'ArrowUp', left:'ArrowLeft',  right:'ArrowRight',  down:'ArrowDown' },   // P2
+];
+const joys = [];
+function joyDraw(j){
+  const g = j.g, R = j.R, c = R, dpr = 1;
+  g.clearRect(0, 0, R*2, R*2);
+  /* 底盘 */
+  g.beginPath(); g.arc(c, c, R-8, 0, 7);
+  g.fillStyle = 'rgba(18,28,56,0.40)'; g.fill();
+  g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,0.20)'; g.stroke();
+  /* 四个方向的标记：激活时高亮 */
+  const marks = [['跳',0,-1,'up'], ['防',0,1,'down'], ['←',-1,0,'left'], ['→',1,0,'right']];
+  g.textAlign = 'center'; g.font = 'bold 22px "Microsoft YaHei", sans-serif';
+  for(const [s, mx, my, k] of marks){
+    const on = j.st[k], px = c + mx*(R-36), py = c + my*(R-36);
+    if(on){
+      g.beginPath(); g.arc(px, py, 23, 0, 7);
+      g.fillStyle = k==='up'? 'rgba(120,170,255,0.32)' : 'rgba(255,210,74,0.22)'; g.fill();
+      g.lineWidth = 3; g.strokeStyle = k==='up'? 'rgba(150,200,255,0.9)' : 'rgba(255,210,74,0.8)'; g.stroke();
+    }
+    g.fillStyle = on? '#ffffff' : 'rgba(190,206,240,0.42)';
+    g.fillText(s, px, py + 8);
+  }
+  /* 摇杆头 */
+  const kx = c + j.dx*0.5, ky = c + j.dy*0.5;
+  g.beginPath(); g.arc(kx, ky, 44, 0, 7);
+  const grd = g.createRadialGradient(kx-12, ky-14, 4, kx, ky, 46);
+  grd.addColorStop(0,'rgba(215,232,255,0.95)');
+  grd.addColorStop(0.6,'rgba(90,130,215,0.80)');
+  grd.addColorStop(1,'rgba(45,70,140,0.72)');
+  g.fillStyle = grd; g.fill();
+  g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,0.62)'; g.stroke();
+  /* 中心点 */
+  g.beginPath(); g.arc(kx, ky, 4, 0, 7); g.fillStyle = 'rgba(255,255,255,0.55)'; g.fill();
+}
+function joyApply(j, want){                       // 只在方向变化时才下 / 抬键（跳＝边沿触发）
+  for(const k of ['up','left','right','down']){
+    const code = j.K[k];
+    if(want[k] && !j.st[k]) vDown(code);
+    else if(!want[k] && j.st[k]) vUp(code);
+    j.st[k] = !!want[k];
+  }
+}
+function joyRelease(j){
+  j.id = null; j.dx = j.dy = 0;
+  joyApply(j, {});
+  joyDraw(j);
+}
+function joyMove(j, e){
+  const r = j.el.getBoundingClientRect();
+  let dx = e.clientX - (r.left + r.width/2);
+  let dy = e.clientY - (r.top + r.height/2);
+  const d = Math.hypot(dx, dy), lim = r.width/2;
+  if(d > lim){ dx = dx/d*lim; dy = dy/d*lim; }
+  j.dx = dx; j.dy = dy;
+  const zx = lim*0.30, zy = lim*0.42;             // 左右灵敏一点，上下需要明确推到位（防误跳）
+  joyApply(j, { left: dx < -zx, right: dx > zx, up: dy < -zy, down: dy > zy });
+  joyDraw(j);
+}
+[...document.querySelectorAll('.pad .dpad')].forEach(el=>{
+  const cvJ = el.querySelector('canvas');
+  if(!cvJ) return;
+  const idx = +el.dataset.pad || 0;
+  const j = { el, g: cvJ.getContext('2d'), R: cvJ.width/2, K: JOY_KEYS[idx] || JOY_KEYS[0],
+              id: null, dx: 0, dy: 0, st: {up:false, left:false, right:false, down:false} };
+  el.addEventListener('pointerdown', e=>{
+    e.preventDefault();
+    if(j.id !== null) return;                     // 一根手指占用一个摇杆
+    j.id = e.pointerId;
+    try{ el.setPointerCapture(e.pointerId); }catch(_){}
+    joyMove(j, e);
+  });
+  el.addEventListener('pointermove',  e=>{ if(e.pointerId === j.id) joyMove(j, e); });
+  el.addEventListener('pointerup',    e=>{ if(e.pointerId === j.id) joyRelease(j); });
+  el.addEventListener('pointercancel',e=>{ if(e.pointerId === j.id) joyRelease(j); });
+  el.addEventListener('lostpointercapture', ()=>joyRelease(j));
+  joyDraw(j);
+  joys.push(j);
+});
 
 /* 标题 / 结算 的按钮 */
 document.querySelectorAll('.mbtn').forEach(el=>{
@@ -5202,7 +5315,17 @@ function loop(now){
   let dt = (now-last)/16.666; last = now;
   dt = Math.min(dt, 2.5);
   const t = now;
-  if(state==='fight' && vsCPU && aiLevel>=2) runMs += dt*16.666;   // 通关计时（只计真实战斗时间）
+  if(state==='fight' && vsCPU && !training && aiLevel>=2) runMs += dt*16.666;   // 通关计时（训练场不计）
+  if(training && state==='fight'){                 // 训练场：咒力无限、领域随时可再开、双方不死
+    for(const p of players){
+      p.energy = 100;
+      if(p.id===0 && !domain) p.cd.domain = 0;
+      if(p.hp < p.maxHp*0.15) p.hp = p.maxHp;      // 快见底就回满，不会 KO 中断练习
+    }
+    if(keys['Enter'] || keys['NumpadEnter']){ resetRound(); }      // 按 Enter 复位重来
+    if(!trainHinted){ trainHinted = true;
+      announce('训 练 场', 120, '#7fe0c0', '敌人不还手　·　咒力无限　·　领域随时可再开'); }
+  }
   if(state==='fight') syncPadKeys();      // 技能图标随轮换 / 领域状态实时更新
 
   if(titleLock>0) titleLock--;
@@ -5214,6 +5337,7 @@ function loop(now){
     if(keys['Digit2']||keys['Numpad2']) sel = 2;               // 人机
     if(keys['Digit3']||keys['Numpad3']) sel = 3;               // 联机
     if(keys['Digit4']||keys['Numpad4']) sel = 4;               // 排行榜
+    if(keys['Digit5']||keys['Numpad5']) sel = 5;               // 训练场
     // 返回标题时手还按着 T/R，别让它们又被当成「任意键」直接开局
     if(!sel){
       for(const k in keys){
@@ -5345,6 +5469,7 @@ function loop(now){
 
   if(state!=='select') drawHUD(t);
   if(state==='fight'||state==='ko') drawSkillBars();
+  if(training && (state==='fight'||state==='ko')) drawTrainTip();
   if(state==='title' || state==='net'){
     drawTitle(t);
     if(state==='net'){ ctx.fillStyle='rgba(4,6,16,0.55)'; ctx.fillRect(0,0,W,H); }   // 联机面板压在标题上

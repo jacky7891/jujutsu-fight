@@ -49,6 +49,7 @@
     cursor:pointer; touch-action:none; }
   .tbtn:active { background:rgba(90,160,255,.5); }
   .tbtn.on { border-color:rgba(130,200,255,.95); color:#eaf4ff; background:rgba(30,60,120,.85); }
+  .tbtn.b2 { left:734px; width:200px; }
 
   /* ---- 左上角退出键 ---- */
   .ebtn { position:absolute; left:40px; top:16px; width:110px; height:34px;
@@ -190,6 +191,7 @@
       </div>
     </div>
     <button class="tbtn" id="ttoggle">触屏控制</button>
+    <button class="tbtn b2" id="cbtn">领域对抗：连按</button>
     <button class="ebtn hide" id="exitBtn">退 出 ESC</button>
   </div>
 </div>
@@ -232,6 +234,8 @@
   黑闪：任何一丝普攻都有 5% 概率骤然触发（无保底），威力为该拳的 2.5 次方并回血
   &nbsp;|&nbsp;
   苍 × 赫 交叠的「无指向茈」有 15 秒内置冷却；「解」的黑线落下前就锁定位置，走位能躲
+  &nbsp;|&nbsp;
+  <b>设置</b>：右上角「触屏控制」＝手机虚拟按键；「领域对抗」＝连按（疯狂点）或<b>长按</b>（按住空格 / 屏幕不放即可持续注入，简易模式），设置会记住
   &nbsp;|&nbsp;
   P1：A/D · W · S · J ｜ P2：←/→ · ↑ · ↓ · 0 ｜ 随时按 ESC 或点左上角「退出」返回
 </div>
@@ -286,6 +290,12 @@ const CLASH_DUR   = 300;     // 对拼时长：5 秒
 const CLASH_GAIN  = 0.052;   // 每次点击注入的咒力（约 20 次填满）
 const CLASH_DECAY = 0.0016;  // 咒力自然流失（每秒约 0.1）
 const CLASH_DMG   = 75;      // 领域被碾碎的反噬伤害
+/* 设置：简易领域对抗 —— 开启后「按住」闪避键 / 屏幕即可持续注入，不用疯狂连点 */
+let optEasyClash = false;
+try{ optEasyClash = localStorage.getItem('gojo_easyclash') === '1'; }catch(_){}
+const CLASH_HOLD     = 12/60;          // 长按每秒等效 12 次点击（约 1.6 秒灌满）
+const CLASH_CPU_HOLD = [6, 9, 13, 15]; // 简易模式下 CPU 的等效点击速率（简单/标准会输，疯狂/地狱更强）
+let touchClashHold = false;            // 触屏：手指是否按在屏幕上
 function domainName(k){
   return k==='void'? '無 量 空 処' : k==='shrine'? '伏 魔 御 厨 子'
        : k==='nameless'? '无 名 领 域' : k==='aiai'? '真 赝 相 爱' : '领 域';
@@ -4002,7 +4012,8 @@ function aiAiBackdrop(cx, cy, r, t){
 /* ================= 领域对拼 =================
    双方同时展开领域 → 领域边缘相撞，进入「咒力的硬度之争」：
    斜上方＝敌方的领域，斜下方＝我方的领域，中间是拔河式的对拼条。
-   电脑：连按 空格（P1）/ ÷（P2）；手机：疯狂点屏幕。                */
+   常规：连按 空格（P1）/ ÷（P2），手机疯狂点屏幕。
+   设置里开启「简易领域对抗」后：按住不放即可持续注入（CPU 也改为稳定速率）。      */
 function clashMine(){ return Net.mode==='client'? 1 : 0; }      // 本机操控的是哪一个
 function startDomainClash(p, kind, cdKey, cdVal){
   const foe = players[1-p.id], d = domain;
@@ -4020,18 +4031,32 @@ function startDomainClash(p, kind, cdKey, cdVal){
     pl.invul = Math.max(pl.invul, 400); }
   clashTaps[0] = clashTaps[1] = 0;
   Net.clashTapRemote = 0;
-  announce('领 域 对 拼', 200, '#ffd77a', '两座领域同时落下——咒力的硬度之争！');
+  announce('领 域 对 拼', 200, '#ffd77a',
+    optEasyClash? '按住空格 / 按住屏幕不放——咒力自动灌入！' : '两座领域同时落下——咒力的硬度之争！');
   return true;
 }
 function clashCollect(){
   const taps = [0,0], mine = clashMine();
   const km = players[mine].kmap;
-  if(tapOnce(km.dodge) || tapOnce(km.dodge2)) taps[mine]++;        // 键盘：连按闪避键（P1＝空格）
-  taps[mine] += clashTaps[mine]; clashTaps[mine] = 0;              // 手机：点屏幕
-  if(Net.mode === 'host'){ taps[1] += Net.clashTapRemote; Net.clashTapRemote = 0; }   // 联机：客机上送的点击
+  if(optEasyClash){
+    // 简易模式：按住闪避键（P1＝空格）/ 按住屏幕 ＝ 持续注入，不用疯狂连点
+    if(keys[km.dodge] || keys[km.dodge2] || touchClashHold) taps[mine] += CLASH_HOLD;
+  } else if(tapOnce(km.dodge) || tapOnce(km.dodge2)) taps[mine]++;  // 键盘：连按闪避键
+  taps[mine] += clashTaps[mine]; clashTaps[mine] = 0;              // 手机：点屏幕（两种模式都算）
+  if(Net.mode === 'host'){
+    if(optEasyClash && Net.clashHoldRemote) taps[1] += CLASH_HOLD;  // 联机：客机按住不放
+    taps[1] += Net.clashTapRemote; Net.clashTapRemote = 0;
+  }
   else if(Net.mode === 'client'){ /* 客机不跑战斗，点击已随输入上送 */ }
-  else if(vsCPU){ if(Math.random() < aiLv().clash) taps[1]++; }    // 人机：CPU 自动按空格（难度越高按得越凶）
-  else { const k2 = players[1].kmap; if(tapOnce(k2.dodge) || tapOnce(k2.dodge2)) taps[1]++; }
+  else if(vsCPU){
+    if(optEasyClash) taps[1] += CLASH_CPU_HOLD[aiLevel]/60;         // 简易模式：CPU 按难度稳定注入
+    else if(Math.random() < aiLv().clash) taps[1]++;                // 常规：CPU 疯狂连点（难度越高越凶）
+  }
+  else {
+    const k2 = players[1].kmap;                                     // 双人同屏：P2 同样按住 ÷ 即可
+    if(optEasyClash){ if(keys[k2.dodge] || keys[k2.dodge2]) taps[1] += CLASH_HOLD; }
+    else if(tapOnce(k2.dodge) || tapOnce(k2.dodge2)) taps[1]++;
+  }
   return taps;
 }
 function updateClash(){
@@ -4144,10 +4169,15 @@ function drawClash(t){
   ctx.font = 'bold 22px Consolas, monospace';
   ctx.fillStyle = left < 1.2? '#ff8090' : '#ffd77a';
   ctx.fillText(left.toFixed(1) + 's', W/2, 344);
-  const tip = (typeof touchOn !== 'undefined' && touchOn)
-    ? '疯狂点击屏幕！把咒力灌进自己的领域'
-    : (vsCPU || Net.mode !== 'off')? '连按 空格 注入咒力！'
-    : 'P1 连按 空格　·　P2 连按 ÷';
+  const tip = optEasyClash
+    ? ((typeof touchOn !== 'undefined' && touchOn)
+        ? '按住屏幕不放！把咒力灌进自己的领域'
+        : (vsCPU || Net.mode !== 'off')? '长按 空格 不放！咒力自动灌入'
+        : 'P1 长按 空格　·　P2 长按 ÷')
+    : ((typeof touchOn !== 'undefined' && touchOn)
+        ? '疯狂点击屏幕！把咒力灌进自己的领域'
+        : (vsCPU || Net.mode !== 'off')? '连按 空格 注入咒力！'
+        : 'P1 连按 空格　·　P2 连按 ÷');
   ctx.font = 'bold 21px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#dfe9ff';
   ctx.fillText(tip, W/2, 668);
   ctx.textAlign = 'left';
@@ -4483,6 +4513,15 @@ function lbOpenName(){
   koEl.classList.add('hide');            // 登记期间收起「重新开始」按钮，避免遮挡
   try{ nameInputEl.focus(); }catch(_){}
 }
+/* 登记框是不是正开着（用状态判断，不依赖 class） */
+function lbOpen(){ return !!lbCur; }
+/* 有没登记的成绩就先把框弹出来：KO 演出中退出、演出后按 T/R 都不会白白丢掉成绩 */
+function lbFlush(){
+  if(lbPending) lbOpenName();
+  return !!lbCur;
+}
+/* 主动放弃登记（登记框开着时再按 ESC） */
+function lbSkip(){ lbCur = null; lbPending = null; nameEl.classList.add('hide'); }
 function lbCommit(){
   if(!lbCur) return;
   lbAdd(lbCur.ch, nameInputEl.value, lbCur.sec);
@@ -4662,6 +4701,17 @@ function setTouch(on){
 setTouch(touchOn);
 ttEl.addEventListener('pointerdown', e=>{ e.preventDefault(); setTouch(!touchOn); });
 
+/* ---- 设置：简易领域对抗（开＝长按注入，关＝连按注入） ---- */
+const cbEl = document.getElementById('cbtn');
+function setEasyClash(on){
+  optEasyClash = on;
+  try{ localStorage.setItem('gojo_easyclash', on? '1':'0'); }catch(_){}
+  cbEl.classList.toggle('on', on);
+  cbEl.textContent = '领域对抗：' + (on? '长按' : '连按');
+}
+setEasyClash(optEasyClash);
+cbEl.addEventListener('pointerdown', e=>{ e.preventDefault(); setEasyClash(!optEasyClash); });
+
 function vDown(code){ if(!keys[code]) pressBuf[code] = 5; keys[code] = true; }
 function vUp(code){ keys[code] = false; }
 
@@ -4679,6 +4729,7 @@ const Net = {
   fx:[],             // 待同步的特效（粒子 / 环 / 公告）
   remote:null,       // 客机送来的按键
   clashTapRemote:0,  // 客机在对拼里点了几下屏幕（房主累加）
+  clashHoldRemote:false,  // 客机是否按住闪避键（简易领域对抗）
   started:false,
   _transport:null,   // 测试用：不经网络直接对接
   mqtt:null, broker:'', myId:'', peerId:null,       // 云信令
@@ -4970,6 +5021,7 @@ function netRecv(m){
   } else if(m.t === 'in'){
     Net.remote = m;                                  // 客机的按键（房主用来驱动 P2）
     if(m.ct) Net.clashTapRemote += m.ct;             // 客机在对拼里的点击
+    Net.clashHoldRemote = !!m.g;                     // 客机是否按住闪避键（简易领域对抗）
   } else if(m.t === 'sn'){
     netApplySnap(m);                                 // 房主广播的状态快照
   } else if(m.t === 'bye'){
@@ -5084,6 +5136,12 @@ const exitEl = document.getElementById('exitBtn');
 let titleLock = 0;                     // 回标题后短暂锁输入，防止手上的按键立刻又开局
 function goTitle(){
   if(state==='title') return;
+  // 通关成绩还没登记：先把登记框弹出来，别让成绩白白丢掉（再按一次 ESC 才是放弃）
+  if(lbOpen()){ lbSkip(); }
+  else if(lbFlush()){
+    announce('先 登 记 成 绩', 170, '#ffd24a', '填名字后按 Enter 上榜　·　再按 ESC 放弃登记');
+    return;
+  }
   netClose();
   clash = null;
   nameEl.classList.add('hide');        // 回标题时收起登记框
@@ -5116,12 +5174,16 @@ function releaseEl(id){
   el.classList.remove('on'); vUp(el.dataset.key);
   delete titleStale[el.dataset.key]; delete held[id];
 }
-/* 领域对拼：点屏幕＝注入咒力（手机的主要操作方式） */
+/* 领域对拼：点屏幕＝注入咒力（手机的主要操作方式）；简易模式下按住不放即可 */
 cv.addEventListener('pointerdown', e=>{
   if(state !== 'clash') return;
   e.preventDefault();
   clashTaps[clashMine()]++;
+  if(optEasyClash) touchClashHold = true;
 });
+const clashHoldOff = ()=>{ touchClashHold = false; };
+addEventListener('pointerup',     clashHoldOff);
+addEventListener('pointercancel', clashHoldOff);
 
 document.querySelectorAll('.pad .btn').forEach(el=>{
   el.addEventListener('pointerdown', e=>{
@@ -5359,8 +5421,11 @@ function loop(now){
     if(stateTimer<=0){
       if(players[0].wins>=2 || players[1].wins>=2){
         if(lbPending) lbOpenName();          // 进了前十：KO 演出结束后弹出登记框
-        if(keys['KeyR']){ state='fight'; players.forEach(p=>p.wins=0); resetRound(); lbResetRun(); }
-        if(keys['KeyT']) goTitle();
+        // 登记框开着时 R / T 不生效：先填名字（Enter 上榜）或按 ESC 放弃
+        if(!lbOpen()){
+          if(keys['KeyR']){ state='fight'; players.forEach(p=>p.wins=0); resetRound(); lbResetRun(); }
+          if(keys['KeyT']) goTitle();
+        }
       } else {
         state='fight'; resetRound();
       }

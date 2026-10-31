@@ -105,7 +105,8 @@
   #pad2 .dpad { left:56vw; }             #pad2 .acts { right:max(10px, 2vw); }
   body.cpu #pad1 .acts { right:max(10px, 2vw); }   /* 人机只有一组：摇杆镇左、技能贴右边缘 */
   .dpad { position:relative; width:var(--joy); height:var(--joy); touch-action:none; }
-  .dpad .joy { width:100%; height:100%; display:block; touch-action:none; }
+  .dpad .joy { width:100%; height:100%; display:block; touch-action:none;
+    background:transparent; box-shadow:none; }   /* 摇杆画布必须透出底下的角色（全局 canvas 规则会给它不透明底色） */
   .acts { display:grid; grid-template-columns:repeat(2, var(--btn)); gap:var(--gap); }
   .btn { width:var(--btn); height:var(--btn); border-radius:50%; touch-action:none;
     border:2px solid rgba(255,255,255,.32); color:#e8f0ff; font-size:min(20px, 3.9vh); font-weight:bold;
@@ -270,6 +271,7 @@ let state = 'title';   // title | fight | ko
 let stateTimer = 0;
 let shake = 0, hitStop = 0, flash = 0, timeAcc = 0, zoom = 1;
 let particles = [], orbs = [], beams = [], fusions = [], announcements = [], ghosts = [];
+let danmaku = [];                 // 彩蛋弹幕（被空间斩斩死时刷屏）
 let slowmo = 1, camX = 0;
 const WORLD_W = 1600;
 
@@ -285,7 +287,7 @@ const DOMAIN_BURST = 30;  // 展开
 const DOMAIN_HOLD  = 250; // 维持（对手被固定 / 自动斩击）
 const DOMAIN_CLOSE = 26;  // 收束
 const AIAI_HOLD    = 900; // 真赝相爱的维持时间（15 秒，够吃满 3 次术式自动填充）
-function domainHold(d){ return (d && d.kind==='aiai')? AIAI_HOLD : DOMAIN_HOLD; }
+function domainHold(d){ return (d && d.kind==='aiai')? AIAI_HOLD : (d && d.kind==='nao')? NAO_RUSH : DOMAIN_HOLD; }
 let domain = null;
 let clash   = null;          // 领域对拼（双方领域同时展开 → 咒力的硬度之争）
 let clashTaps = [0, 0];      // 点屏幕累计的点击数（手机用）
@@ -324,6 +326,7 @@ const DASH_CD     = 110;  // 冲拳：冷却
 const BLOOD_CD    = 150;  // 穿血：冷却
 const YCUT_CD     = 190;  // 解（裁剪线）：冷却
 const NAMELESS_GLYPHS = ['虎','杖','悠','仁','解','黒','閃','領','域','無','名','血'];
+const NAO_GLYPHS      = ['時','輪','金','剛','禅','院','直','哉','投','射','咒','言'];
 
 /* 乙骨忧太：突刺 / 袈裟斬 / 术式模仿 / 真赝相爱 */
 const THRUST_CD   = 100;  // 突刺
@@ -339,7 +342,21 @@ const DODGE_LEN    = 18;  // 整个动作时长（后段为滑步收势）
 const DODGE_IFRAME = 15;  // 无敌帧（覆盖整个突进）
 const DODGE_CD     = 56;  // 冷却（更短：躲完能很快再躲）
 const DODGE_COST   = 6;   // 咒力消耗
-const GHOST_COL = { gojo:'#7fd0ff', sukuna:'#ff8090', yuji:'#ffb070', yuta:'#a8d8ff' };
+const GHOST_COL = { gojo:'#7fd0ff', sukuna:'#ff8090', yuji:'#ffb070', yuta:'#a8d8ff', naoya:'#a8d878' };
+
+/* 禅院直哉：投射咒法 / 咒言指令 / 时轮金刚 */
+const PROJ_CD   = 600;    // 投射咒法：冷却（记录 5 秒 → 回溯 → 重现一整轮）
+const CMD_CD    = 330;    // 咒言指令：冷却
+const SLASH_CD  = 160;    // 居合斩：冷却
+const PROJ_FRAMES = 300;  // 投射：记录 5 秒（60fps × 5）的行动
+const PROJ_REWIND = 60;   // 回溯：1 秒（60 帧）内倒回起点
+const PROJ_REPLAY = 60;   // 重现：在 1 秒（60 帧）内演完（＝压缩成 1/5 时间）
+const CMD_TIME    = 120;  // 咒言指令：2 秒内不遵守就定住
+const NAO_FROZEN  = 100;  // 被咒言钉住的时长（约 1.7 秒）
+const NAO_BASE    = 0.55; // 被动：初始伤害倍率（比别人低）
+const NAO_RATE    = 1/260;// 每移动 1px 的加成
+const NAO_CAP     = 2.6;  // 被动：加成上限
+const NAO_RUSH    = 300;  // 时轮金刚：领域维持时长（5 秒）
 const STOCK_MAX   = 4;    // 里香能储存的术式上限
 /* 术式模仿：不再按蓄力时长区分，而是固定顺序轮换，打完一个自动换成下一个 */
 const MIMIC_ORDER = ['kotan', 'rika', 'ladder'];
@@ -407,8 +424,21 @@ const CHARS = {
         name:'领域展开 · 真 赝 相 爱', desc:'领域内咒力无限、模仿无冷却、其余技能冷却减半、每 5 秒填充术式；领域内再按 R 释放纯爱大炮' },
     ],
   },
+  naoya: {
+    id:'naoya', name:'禅 院 直 哉', sub:'投 射 咒 法', hud:'#a8c878', accent:'#7da84a',
+    skills:[
+      { cd:'proj',   cost:30,  cdMax:PROJ_CD,  label:'投', short:'投 射', col:'#a8d878', p1:'Q', p2:'1',
+        name:'投 射 咒 法', desc:'记录接下来 5 秒的行动（身后残影提示），时间回溯后选择是否重现：重现＝把这 5 秒压缩进 1 秒内极速重演，行动带残影' },
+      { cd:'cmd',    cost:26,  cdMax:CMD_CD,   label:'令', short:'投 令', col:'#ffd24a', p1:'E', p2:'2',
+        name:'投 射 指 令', desc:'投射触碰敌人，强令其立刻做出随机行动（普攻 / 放技能 / 朝指定方向移动）；2 秒内不遵守就被投射钉住' },
+      { cd:'slash',  cost:18,  cdMax:SLASH_CD, label:'斩', short:'居 合', col:'#dce8ff', p1:'F', p2:'3',
+        name:'居 合 斩', desc:'瞬身挥刀 —— 吃满移动距离加成，跑得越远这一刀越痛' },
+      { cd:'domain', cost:100, cdMax:900, label:'輪', short:'領 域', col:'#a8d878', p1:'R', p2:'4',
+        name:'時 輪 金 剛', desc:'把速度提升到极致，在场内极速穿梭，撞到敌人就造成伤害；狂奔之后自动打出一记重拳' },
+    ],
+  },
 };
-const CHAR_LIST = ['gojo', 'sukuna', 'yuji', 'yuta'];
+const CHAR_LIST = ['gojo', 'sukuna', 'yuji', 'yuta', 'naoya'];
 let picks = ['gojo', 'sukuna'];        // 双方所选角色
 let selState = null;                   // 角色选择界面状态
 
@@ -430,6 +460,10 @@ const SKILLKEYS = {
     0: [['KeyQ',null],['KeyE',null],['KeyF',null],['KeyR',null]],
     1: [['Numpad1','Digit1'],['Numpad2','Digit2'],['Numpad3','Digit3'],['Numpad4','Digit4']],
   },
+  naoya: {
+    0: [['KeyQ',null],['KeyE',null],['KeyF',null],['KeyR',null]],
+    1: [['Numpad1','Digit1'],['Numpad2','Digit2'],['Numpad3','Digit3'],['Numpad4','Digit4']],
+  },
 };
 // 人机的虚拟按键（每个角色各不相同，走同一套 updatePlayer）
 const AI_SKILLKEYS = {
@@ -437,8 +471,9 @@ const AI_SKILLKEYS = {
   sukuna: [['AISL'],['AIGR'],['AIFL'],['AISH']],
   yuji:   [['AIDP'],['AIBL'],['AIYC'],['AIYG']],
   yuta:   [['AITH'],['AIKS'],['AIMC'],['AIYY']],
+  naoya:  [['AIN1'],['AIN2'],['AIN3'],['AIN4']],
 };
-const ALL_AI_CODES = ['AIL','AIR','AIU','AID','AIP','AIB','AIRD','AIH','AIDM','AISL','AIGR','AIFL','AISH','AIDP','AIBL','AIYC','AIYG','AITH','AIKS','AIMC','AIYY','AIDG'];
+const ALL_AI_CODES = ['AIL','AIR','AIU','AID','AIP','AIB','AIRD','AIH','AIDM','AISL','AIGR','AIFL','AISH','AIDP','AIBL','AIYC','AIYG','AITH','AIKS','AIMC','AIYY','AIDG','AIN1','AIN2','AIN3','AIN4'];
 function aiKeyMap(char){
   const sk = AI_SKILLKEYS[char] || AI_SKILLKEYS.gojo;
   return { left:'AIL', right:'AIR', up:'AIU', down:'AID', punch:'AIP', punch2:null,
@@ -463,7 +498,108 @@ const BLUE_HOLD   = 180;  // 苍：就位后的停留时间，到时引爆
 const RED_SPEED   = 9;    // 赫：飞行速度
 const RED_HOLD    = 110;  // 停留的赫：存在时间
 
-/* ================= 玩家 ================= */
+/* ================= 禅院直哉 ================= */
+/* 被动：攻击初始伤害比别人低，但随移动距离增加；攻击命中 / 被击中都会清零 */
+function naoMul(p){
+  return Math.min(NAO_CAP, NAO_BASE + p.moveDist*NAO_RATE);
+}
+/* 投射咒法是否正在生效（记录 / 回溯 / 选择 / 重现 全程） */
+function naoProjActive(p){
+  return !!p.naoRec || p.state==='naoRewind' || p.state==='naoChoose' || !!p.naoReplay;
+}
+function naoProjPhase(p){
+  if(p.naoRec)        return '記 錄 中';
+  if(p.state==='naoRewind')  return '時 間 回 溯';
+  if(p.state==='naoChoose')  return '選 擇 · 重 現 ？';
+  if(p.naoReplay)     return '重 現 中';
+  return '';
+}
+/* 投射咒法：按 Q 开始记录 5 秒的行动（正常行动，身后残影提示），
+   记完自动时间回溯（位置倒带回记录起点），然后选择：F 重现 / R 取消。
+   重现＝把这 5 秒压缩进 1 秒内极速重演（每帧产生残影），期间技能免费。 */
+function startNaoRecord(p){
+  p.state = 'naoRec'; p.stateT = 0;
+  p.naoRec = { frames:[], t:PROJ_FRAMES };
+  announce('投 射 咒 法 · 記 錄', 70, '#a8d878', '接下来 5 秒的行动会被记录 —— 尽情跑位出招');
+}
+function updateNaoRecord(p, K){                       // 每帧采集输入与位置（正常行动不受影响）
+  const R = p.naoRec;
+  R.frames.push({ l:K.left, r:K.right, u:K.up, d:K.down, p:K.punchP,
+                  s1:K.s1P, s2:K.s2P, s3:K.s3P, s4:K.s4P, x:p.x, y:p.y });
+  if(p.stateT%3===0) ghosts.push({ x:p.x, y:p.y, w:p.w, h:p.h, facing:p.facing, char:p.char, life:20, max:20 });
+  if(p.stun>0){                                       // 记录被中途打断
+    p.naoRec = null; p.state='idle';
+    announce('記 錄 中 斷', 40, '#ff8090');
+    return;
+  }
+  if(R.done) return;                                  // 已记录满：停止采集（frames 保留给回溯/重演）
+  if(R.frames.length>=PROJ_FRAMES){                   // 记录完毕 → 时间回溯（只触发一次）
+    R.done = true;
+    p.state='naoRewind'; p.stateT=0;
+    announce('時 間 回 溯', 60, '#a8d878');
+  }
+}
+function updateNaoRewind(p){                          // 倒带：沿记录的位置快照倒回起点（1 秒倒完 5 秒）
+  const T = p.stateT, rec = p.naoRec;
+  p.vx = 0; p.blocking = false;
+  if(rec){
+    const len = rec.frames.length;
+    const idx = Math.max(0, Math.round((1 - T/PROJ_REWIND) * (len-1)));
+    const fr = rec.frames[Math.min(len-1, idx)];
+    if(fr){ p.x = fr.x; p.y = fr.y; }
+    ghosts.push({ x:p.x, y:p.y, w:p.w, h:p.h, facing:p.facing, char:p.char, life:14, max:14 });
+  }
+  if(T>=PROJ_REWIND){ p.state='naoChoose'; p.stateT=0; }      // 1 秒倒完
+}
+/* 漫画分格：被投射钉住的定格演出 */
+let naoPinFx = null;
+function naoPin(def, cmd){
+  def.frozen = NAO_FROZEN;
+  def.naoCmd = null; def.blocking = false;
+  naoPinFx = { x:def.x, y:def.y-def.h*0.55, t:0, max:46 };
+  flash = Math.max(flash, 0.9); shake = Math.max(shake, 18); hitStop = Math.max(hitStop, 12);
+  ring(def.x, def.y-def.h*0.5, '#ffffff', 220, 7);
+  announce('投 射 · 従 実 セ ヨ', 90, '#ffd24a', '违抗投射者 —— 钉在原地');
+  spawnParticles(def.x, def.y-def.h*0.5, 26, '#ffd24a', 7, 34, 5, 0.08);
+}
+const CMD_TEXT = { punch:'立刻普攻一次 !', skill:'立刻使用技能 !', moveL:'立刻向左移动 !', moveR:'立刻向右移动 !' };
+function applyNaoCmd(p, foe){                         // 触碰命中：随机下达一条指令
+  const roll = Math.random();
+  const type = roll<0.34? 'punch' : roll<0.68? 'skill' : (Math.random()<0.5? 'moveL' : 'moveR');
+  foe.naoCmd = { type, dir: type==='moveL'? -1 : 1, t:CMD_TIME, moveT:0 };
+  p.state='idle'; p.vx = 0;
+  slowmo = Math.max(slowmo, 0.45); hitStop = Math.max(hitStop, 8);
+  ring(foe.x, foe.y-foe.h*0.5, '#ffd24a', 150, 6);
+  spawnParticles(foe.x, foe.y-foe.h*0.5, 14, '#ffd24a', 5, 26, 4);
+  announce('投 射 · 命 令', 60, '#ffd24a');
+}
+function checkNaoCmd(p){                              // 每帧检查敌人有没有遵守指令
+  const c = p.naoCmd;
+  if(!c) return;
+  c.t--;
+  let done = false;
+  const skillStates = ['idle','walk','jump','block','punch','dodge','frozen','down'];
+  if(c.type==='punch')      done = p.state==='punch';
+  else if(c.type==='skill') done = skillStates.indexOf(p.state)<0;
+  else {
+    if((c.dir===1 && p.vx>2.4) || (c.dir===-1 && p.vx<-2.4)) c.moveT++; else c.moveT = 0;
+    done = c.moveT>=16;                               // 连续约 0.27 秒朝指定方向跑
+  }
+  if(done){
+    p.naoCmd = null;
+    announce('投 射 · 遵 守', 46, '#a8d878', '服从的乖孩子 —— 解除');
+    p.energy = clamp(p.energy + 8, 0, 100);           // 服从的小奖励
+  } else if(c.t<=0){
+    naoPin(p, c);                                     // 2 秒内不遵守 → 定住
+  }
+}
+/* 领域终幕：极速奔跑后的终结一拳 */
+function castNaoFist(p){
+  const foe = players[1-p.id];
+  p.state='naoFist'; p.stateT=0; p.atkHit=false;
+  p.facing = foe.x > p.x ? 1 : -1;
+  announce('時 輪 金 剛 · 終', 60, '#a8d878');
+}
 function makePlayer(id, char){
   const ch = char || picks[id] || 'gojo';
   return {
@@ -476,11 +612,19 @@ function makePlayer(id, char){
     comboClock:0, comboWindow:0,  // 连击保护：被连续压制的帧数 / 脱离连招的倒计时
     coyote:0, jumpBuf:0, jumps:1, landSquash:0,
     cd:{blue:0, red:0, domain:0, cleave:0, grab:0, flame:0, shrine:0, fuse:0,
-        dash:0, blood:0, ycut:0, thrust:0, kesa:0, mimic:0, dodge:0},
+        dash:0, blood:0, ycut:0, thrust:0, kesa:0, mimic:0, dodge:0,
+        proj:0, cmd:0, slash:0},
     stock:0,          // 里香储存的术式（突刺命中 / 领域自动填充）
     mimicIdx:0,       // 术式模仿：当前轮到的术式（咒言 → 宇守罗弹 → 雅各布天梯）
     cannonHits:0,     // 纯爱大炮：已命中段数
     seal:0,           // 被雅各布天梯封禁术式的剩余时间
+    wsReady:true,     // 空间斩：本回合还没用过（仅宿傩生效）
+    wsLock:false,     // 空间斩起手期间：锁血，打不动
+    moveDist:0,       // 直哉被动：累计移动距离（攻击命中 / 被击中时清零）
+    naoRec:null,      // 投射咒法：记录中 {frames, t}
+    naoReplay:null,   // 投射咒法：重演中 {frames, idx}
+    naoCmd:null,      // 被咒言下了指令 {type, dir, t, moveT}
+    frozen:0,         // 被咒言钉住：完全不能动
     hitFlash:0, wins:0,
     grabbedBy:null, grabTarget:null, kmap: keyMap(id, ch), aiKeys: aiKeyMap(ch),
   };
@@ -492,7 +636,8 @@ function resetRound(){
   players = [makePlayer(0, picks[0]), makePlayer(1, picks[1])];
   players[0].wins = w0; players[1].wins = w1;
   orbs = []; particles = []; beams = []; fusions = []; announcements = []; ghosts = [];
-  slashes = []; fireZones = []; dmgNums = []; clash = null; darkPillars = [];
+  slashes = []; fireZones = []; dmgNums = []; clash = null; darkPillars = []; wsFx = null;
+  danmaku.length = 0; naoPinFx = null;
   shake = 0; slowmo = 1; flash = 0; camX = 0; zoom = 1; domain = null;
   bfFx = 0; bfStop = 0; bfSlow = 0;
   aiReset(); syncPadKeys();
@@ -503,6 +648,35 @@ function resetRound(){
 function announce(text, time, color, sub){
   announcements.push({text, time, max:time, color, sub});
   netFx([2, text, time, color, sub]);                 // 联机：把公告同步给客机
+}
+/* ================= 彩蛋弹幕（被空间斩斩死时刷屏） ================= */
+const EGG_TEXT = '这宿傩又贷啥了';
+const DANMAKU_COLS = ['#ffffff','#ffe08a','#9fe8ff','#ffb3c0','#b9ffd0','#ffd24a'];
+function danmakuPush(text){                     // 单条：从右侧飘进来
+  danmaku.push({ text, x: W + rand(20, 420), y: rand(150, 560), v: rand(3.6, 7.6),
+    size: Math.round(rand(23, 34)), col: DANMAKU_COLS[(Math.random()*DANMAKU_COLS.length)|0] });
+  if(danmaku.length > 70) danmaku.shift();
+}
+function danmakuBurst(text, n){ for(let i=0;i<(n||12);i++) danmakuPush(text); }
+function danmakuEgg(){                          // 彩蛋：被空间斩斩死的瞬间，弹幕疯狂刷屏
+  danmakuBurst(EGG_TEXT, 18);
+  danmakuBurst('这 宿 傩 又 贷 啥 了 ？？', 5);
+  announce('这 宿 傩 又 贷 啥 了', 190, '#ffd24a', '被空间斩斩断的彩蛋');
+}
+function drawDanmaku(){
+  if(!danmaku.length) return;
+  ctx.save();
+  ctx.textAlign = 'left';
+  for(let i=danmaku.length-1;i>=0;i--){
+    const d = danmaku[i];
+    d.x -= d.v;                                 // 弹幕不受慢动作影响，照常飘
+    if(d.x < -d.size*d.text.length - 60){ danmaku.splice(i,1); continue; }
+    ctx.font = 'bold ' + d.size + 'px "Microsoft YaHei", sans-serif';
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(6,8,20,0.85)';
+    ctx.strokeText(d.text, d.x, d.y);
+    ctx.fillStyle = d.col; ctx.fillText(d.text, d.x, d.y);
+  }
+  ctx.restore();
 }
 function spawnParticles(x,y,n,color,speed=6,life=30,size=4,grav=0.15){
   netFx([0, Math.round(x), Math.round(y), n, color, speed, life, size, grav]);   // 联机：同步粒子
@@ -574,6 +748,10 @@ function damage(att, def, dmg, kb, kbY, stun, type){
     if(def.id === 1)        dmg *= L.taken;    // 人机挨到的
   }
   if(def.invul>0 && type!=='cleave') return;      // 捌 的刀光无视无敌
+  if(def.wsLock){                                 // 宿傩空间斩：丝血锁血，这几秒打不动他
+    spawnParticles(def.x, def.y-def.h*0.6, 6, '#ffd24a', 3, 18, 3);
+    hitStop = Math.max(hitStop, 3); return;
+  }
   const col = type==='hollow'? '#c04aff' : type==='red'? '#ff5060' :
               type==='blue'? '#5aa0ff' : type==='flame'? '#ff9040' :
               type==='cleave'? '#d8dee8' : type==='black'? '#ff2b55' :
@@ -581,10 +759,17 @@ function damage(att, def, dmg, kb, kbY, stun, type){
               type==='ladder'? '#ffd24a' : type==='cannon'? '#c8a0ff' : '#ffffff';
   // 防御减伤（领域展开无可抵挡）
   if(type!=='domain' && def.blocking && att && ((def.facing===1 && att.x>def.x)||(def.facing===-1 && att.x<def.x))){
-    def.hp -= dmg*0.18; def.vx += Math.sign(kb||1)*kb*0.3;
+    if(att && att.char==='naoya'){ dmg *= naoMul(att); att.moveDist = 0; }
+    if(def.char==='naoya') def.moveDist = 0;
+    def.hp -= wsSurvive(def, dmg*0.18); def.vx += Math.sign(kb||1)*kb*0.3;
     spawnParticles(def.x, def.y-def.h*0.6, 10, '#7fd0ff', 4, 20, 3);
+    maybeWorldSlash(def);                 // 防御中被削到丝血：同样要能起手空间斩
     hitStop = 4; return;
   }
+  if(def.state==='wsBreak') dmg *= WS_BREAK_MUL;   // 空间斩后的破绽期：这一下打得更疼
+  if(att && att.char==='naoya'){ dmg *= naoMul(att); att.moveDist = 0; }   // 直哉被动：跑得越远打得越痛，命中后清零
+  if(def.char==='naoya') def.moveDist = 0;         // 直哉被打中：移动蓄力清零
+  dmg = wsSurvive(def, dmg);                       // 宿傩：致命一击削成「还剩一口气」，好起手空间斩
   def.hp -= dmg;
   def.vx += kb; def.vy -= kbY;
   def.stun = stun; def.hitFlash = 12;
@@ -602,6 +787,7 @@ function damage(att, def, dmg, kb, kbY, stun, type){
     if(def.comboClock>=COMBO_LIMIT) comboBreak(def, own);
   }
   if(def.hp<=0){ def.hp=0; ko(own, def); }
+  else maybeWorldSlash(def);                       // 宿傩丝血 → 锁血强行起手空间斩
 }
 
 /* 连击保护：被连续压制 5 秒自动挣脱，避免被一套连到死 */
@@ -1060,8 +1246,52 @@ function doJump(p, air){
 /* ================= 更新玩家 ================= */
 // 术式均为「按下触发」：长按不会连发；按住第 3 槽则是蓄力
 const consS = (k,n)=>consume(k['s'+n][0], k['s'+n][1]);
+function trySkillsNaoya(p, k, K){
+  const foe = players[1-p.id];
+  const free = !!p.naoReplay;                          // 重演期间：技能免费（记录了什么就放什么）
+  if(K.s1P){
+    consS(k,1);
+    if(free || (p.energy>=30 && p.cd.proj<=0)){
+      if(!free){ p.energy-=30; p.cd.proj=PROJ_CD; }
+      startNaoRecord(p);
+    }
+    else if(p.cd.proj>0) announce('投 射 尚 未 恢 复', 30, '#ffd24a');
+    else announce('咒 力 不 足 !', 30, '#ff8090');
+  }
+  else if(K.s2P){
+    consS(k,2);
+    if(free || (p.energy>=26 && p.cd.cmd<=0)){
+      if(!free){ p.energy-=26; p.cd.cmd=CMD_CD; }
+      p.state='naoCmd'; p.stateT=0;
+    }
+    else if(p.cd.cmd>0) announce('投 射 尚 未 恢 复', 30, '#ffd24a');
+    else announce('咒 力 不 足 !', 30, '#ff8090');
+  }
+  else if(K.s3P){
+    consS(k,3);
+    if(free || (p.energy>=18 && p.cd.slash<=0)){
+      if(!free){ p.energy-=18; p.cd.slash=SLASH_CD; }
+      p.state='naoSlash'; p.stateT=0;
+    }
+    else if(p.cd.slash>0) announce('居 合 尚 未 恢 复', 30, '#ffd24a');
+    else announce('咒 力 不 足 !', 30, '#ff8090');
+  }
+  else if(K.s4P){
+    consS(k,4);
+    if(p.energy>=100 && p.cd.domain<=0 && state==='fight'){
+      if(!startDomainClash(p, 'nao', 'domain', 900)){
+        p.state='domain'; p.stateT=0; p.energy=0; p.cd.domain=900;
+        domain = { owner:p.id, kind:'nao', phase:0, t:0, hitCd:0, finale:false };
+      }
+    }
+    else if(p.energy<100) announce('咒 力 不 足 !', 30, '#ff8090');
+    else if(p.cd.domain>0) announce('领 域 尚 未 恢 复', 30, '#ffd24a');
+  }
+  else if(K.punchP){ consume(k.punch, k.punch2); p.state='punch'; p.stateT=0; p.atkStep=1; p.atkHit=false; }
+}
 function trySkills(p, k, K){
-  if(p.char==='sukuna') trySkillsSukuna(p, k, K);
+  if(p.char==='naoya') trySkillsNaoya(p, k, K);
+  else if(p.char==='sukuna') trySkillsSukuna(p, k, K);
   else if(p.char==='yuji') trySkillsYuji(p, k, K);
   else if(p.char==='yuta') trySkillsYuta(p, k, K);
   else trySkillsGojo(p, k, K);
@@ -1085,7 +1315,8 @@ function trySkillsGojo(p, k, K){
   }
   else if(K.s4P){
     consS(k,4);
-    if(p.energy>=100 && p.cd.domain<=0 && p.onGround && state==='fight'){
+    // 空中也能结印展开（咒力满即可，落地与否不限）
+    if(p.energy>=100 && p.cd.domain<=0 && state==='fight'){
       if(!startDomainClash(p, 'void', 'domain', 900)){        // 对手也在展开 → 进入领域对拼
         p.state='domain'; p.stateT=0; p.energy=0; p.cd.domain=900;
         domain = { owner:p.id, kind:'void', phase:0, t:0 };
@@ -1096,6 +1327,109 @@ function trySkillsGojo(p, k, K){
     else announce('需 落 地 结 印', 30, '#ff8090');
   }
   else if(K.punchP){ consume(k.punch, k.punch2); p.state='punch'; p.stateT=0; p.atkStep=1; p.atkHit=false; }
+}
+
+/* ================= 两面宿傩 · 空间斩（丝血锁血 + 预警必杀） =================
+   触发：第一次被打到 WS_HP 以下时锁血强行起手，期间打不动他；
+   预警：屏幕上方倒计时 + 斜向预切线，越来越烫；
+   斩击：沿切线把整个画面斜切成两半，中间是纯黑切缝；
+   破绽：斩完之后无敌解除、可以被打（受伤 ×1.35）。                     */
+const WS_HP       = 0.13;   // 触发血量（占最大体力比例）
+const WS_CHARGE   = 120;    // 预警倒计时（2 秒）
+const WS_SLASH    = 10;     // 落刀定格
+const WS_OPEN     = 44;     // 画面被切开的持续帧
+const WS_BREAK    = 72;     // 破绽帧：可被攻击
+const WS_DMG      = 55;     // 被斩中的伤害
+const WS_BREAK_MUL= 1.35;   // 破绽期受伤倍率
+let wsFx = null;            // 演出数据（绘制用）
+
+function startWorldSlash(p){
+  const foe = players[1-p.id];
+  p.state='wsCharge'; p.stateT=0; p.wsLock=true; p.stun=0; p.vx=0; p.vy=0;
+  p.invul = Math.max(p.invul, WS_CHARGE + WS_SLASH + WS_OPEN + 4);   // 起手到斩完：霸体
+  p.facing = foe.x > p.x ? 1 : -1;
+  const ang = (Math.random()<0.5? -1 : 1) * rand(0.5, 0.8);          // 切线倾角（约 29°~46°）
+  wsFx = { owner:p.id, ang, phase:'charge', left:WS_CHARGE, gap:0, openT:0, rollDone:false, hit:false };
+  announce('空 间 斩 · 解', 190, '#ff8090', '看准切线落下的瞬间闪避 —— 否则连空间一起被斩断');
+  shake = Math.max(shake, 9); hitStop = Math.max(hitStop, 8);
+}
+/* 丝血保命：本回合的空间斩还没放过时，致命一击打不死宿傩 ——
+   伤害被削到「只剩一口气」，好让他强行起手空间斩。
+   （否则被黑闪 / 大招一击秒杀，就永远看不到这一刀了）              */
+function wsSurvive(def, dmg){
+  if(def.char!=='sukuna' || !def.wsReady || training || state!=='fight') return dmg;
+  if(domain || clash) return dmg;                        // 领域 / 对拼里不触发空间斩，也就不保命
+  const thr  = def.maxHp*WS_HP*0.6;                      // 残留血量：必定低于触发线
+  const keep = Math.min(thr, def.hp*0.5);
+  const cut  = Math.max(0, def.hp - keep);               // 这一下最多能打掉多少
+  if(dmg > cut){                                         // 本该致命 → 削成「还剩一口气」
+    spawnParticles(def.x, def.y-def.h*0.6, 14, '#ff5060', 5, 26, 4);
+    announce('宿 傩 尚 未 出 手', 110, '#ff8090', '这一击没能把他打死 —— 空间斩要来了');
+    return cut;
+  }
+  return dmg;
+}
+function maybeWorldSlash(p){                    // 血量打到阈值就触发，每回合一次
+  if(p.char!=='sukuna' || !p.wsReady || state!=='fight') return;
+  if(training) return;                          // 训练场不会死，也就没必要斩（免得打断练习）
+  if(p.hp<=0 || p.hp > p.maxHp*WS_HP) return;
+  if(domain || clash) return;
+  p.wsReady = false;
+  startWorldSlash(p);
+}
+function wsCpuReact(foe){                       // 人机：CPU 抓最后 0.3 秒反应（难度越高越会躲）
+  if(!vsCPU || training || foe.id!==1) return;
+  const P = [0.35, 0.55, 0.75, 0.92][aiLevel] || 0.6;
+  if(Math.random() < P) tryDodge(foe, { left:false, right:false });
+}
+function doWorldSlash(p, foe){
+  const dodged = foe.invul>0 || foe.state==='dodge';
+  if(wsFx){ wsFx.phase='slash'; wsFx.hit = !dodged; wsFx.openT = 0; }
+  flash = Math.max(flash, 1.15); shake = 50; slowmo = 0.22; hitStop = 16; zoom = 1.22;
+  ring(p.x, p.y-p.h*0.5, '#ffffff', 330, 8);
+  spawnParticles(foe.x, foe.y-foe.h*0.5, 46, dodged? '#9fb6d8' : '#ff5060', 12, 44, 6, 0.1);
+  if(!dodged && foe.hp>0){
+    // 被这一刀斩中＝连生命一起被斩断：无论还剩多少血，直接死亡
+    damage(p, foe, Math.max(WS_DMG, foe.hp), p.facing*12, 9, 46, 'worldslash');
+    if(foe.hp > 0){ foe.hp = 0; ko(p, foe); }
+    announce('空 间 · 断 绝', 140, '#ff8090', '斩中的不只是空间 —— 直接死亡');
+    danmakuEgg();                                  // 彩蛋弹幕：这宿傩又贷啥了
+  } else announce('闪 避 成 功', 110, '#7fe0c0', '那一刀从身边擦了过去');
+}
+function updateWorldSlash(p, foe){
+  const T = p.stateT;
+  p.blocking = false; p.vx *= 0.6;
+  if(!p.onGround) p.vy = 0;                     // 空中也会悬停拔刀
+  if(p.state==='wsCharge'){
+    if(!wsFx){ p.state='idle'; return; }
+    wsFx.phase = 'charge';
+    wsFx.left  = Math.max(0, WS_CHARGE - T);
+    if(wsFx.left<=18 && !wsFx.rollDone){ wsFx.rollDone = true; wsCpuReact(foe); }
+    const k = 1 - wsFx.left/WS_CHARGE;
+    shake = Math.max(shake, 0.8 + k*3.5);
+    zoom  = Math.max(zoom, 1 + k*0.10);
+    if(T%3===0) spawnParticles(p.x + p.facing*40, p.y - p.h*0.62, 3, '#ff5060', 3, 18, 4, 0);
+    if(T>=WS_CHARGE){ p.state='wsSlash'; p.stateT=0; doWorldSlash(p, foe); }
+  }
+  else if(p.state==='wsSlash'){
+    if(wsFx) wsFx.openT++;
+    if(T>=WS_SLASH){ p.state='wsOpen'; p.stateT=0; }
+  }
+  else if(p.state==='wsOpen'){
+    if(wsFx){
+      wsFx.openT++;
+      // 缝隙：瞬间张开，到末尾收拢
+      wsFx.gap = Math.min(1, T/7) * (T < WS_OPEN-16 ? 1 : Math.max(0, (WS_OPEN-T)/16));
+    }
+    if(T>=WS_OPEN){
+      p.state='wsBreak'; p.stateT=0; p.invul=0; p.wsLock=false;
+      announce('宿 傩 出 现 破 绽 !', 100, '#ffd24a', '趁现在狠狠打回去');
+    }
+  }
+  else if(p.state==='wsBreak'){
+    if(wsFx) wsFx.gap *= 0.80;
+    if(T>=WS_BREAK){ p.state='idle'; p.stateT=0; wsFx=null; }
+  }
 }
 
 /* ================= 两面宿傩：解 / 捌 / 灶·开 / 伏魔御厨子 ================= */
@@ -1121,7 +1455,7 @@ function trySkillsSukuna(p, k, K){
   }
   else if(K.s4P){
     consS(k,4);
-    if(p.energy>=100 && p.cd.shrine<=0 && p.onGround && state==='fight'){
+    if(p.energy>=100 && p.cd.shrine<=0 && state==='fight'){   // 空中也能展开
       if(!startDomainClash(p, 'shrine', 'shrine', 900)){
         p.state='domain'; p.stateT=0; p.energy=0; p.cd.shrine=900;
         domain = { owner:p.id, kind:'shrine', phase:0, t:0, tick:0 };
@@ -1153,7 +1487,7 @@ function trySkillsYuji(p, k, K){
   }
   else if(K.s4P){
     consS(k,4);
-    if(p.energy>=100 && p.cd.domain<=0 && p.onGround && state==='fight'){
+    if(p.energy>=100 && p.cd.domain<=0 && state==='fight'){   // 空中也能展开
       if(!startDomainClash(p, 'nameless', 'domain', 900)){
         p.state='domain'; p.stateT=0; p.energy=0; p.cd.domain=900;
         domain = { owner:p.id, kind:'nameless', phase:0, t:0 };
@@ -1271,7 +1605,7 @@ function trySkillsYuta(p, k, K){
   else if(K.s4P){
     consS(k,4);
     if(inAiAi(p)) castCannon(p);                       // 领域内再按一次 → 纯爱大炮
-    else if(p.energy>=100 && p.cd.domain<=0 && p.onGround && state==='fight'){
+    else if(p.energy>=100 && p.cd.domain<=0 && state==='fight'){   // 空中也能展开
       if(!startDomainClash(p, 'aiai', 'domain', AIAI_HOLD + 420)){
         p.state='domain'; p.stateT=0; p.energy=0;
         p.cd.domain = AIAI_HOLD + 420;                        // 领域收束后仍需等待一段冷却
@@ -1536,7 +1870,39 @@ function updatePlayer(p, foe, k){
   p.energy = clamp(p.energy + 0.22, 0, 100);
 
   const locked = p.stun>0 || state!=='fight';
-  if(locked){ for(const key in K) K[key]=false; }
+  if(locked){ for(const key in K) K[key]=false; if(p.naoReplay && p.stun>0){ p.naoReplay=null; p.naoRec=null; } }
+  /* 投射咒法·重演：用记录覆盖输入（5 秒压进 1 秒＝每帧演 5 条），期间技能免费 */
+  if(p.naoReplay && !locked){
+    const R = p.naoReplay, from = Math.floor(R.idx);
+    R.idx += PROJ_FRAMES/PROJ_REPLAY;
+    const fr = R.frames[Math.min(R.frames.length-1, Math.floor(R.idx))];
+    if(fr){
+      K.left=fr.l; K.right=fr.r; K.up=fr.u; K.down=fr.d;      // 移动方向取当前帧
+      // 被压缩掉的那些帧里只要有按键，就补成这一帧的「按下沿」，免得动作丢失
+      let upP=false, pp=false, s1=false, s2=false, s3=false, s4=false;
+      for(let i=from; i<Math.floor(R.idx) && i<R.frames.length; i++){
+        const f2 = R.frames[i];
+        if(f2.u) upP=true; if(f2.p) pp=true;
+        if(f2.s1) s1=true; if(f2.s2) s2=true; if(f2.s3) s3=true; if(f2.s4) s4=true;
+      }
+      K.upP=upP; K.punchP=pp; K.punch=pp;
+      K.s1P=s1; K.s2P=s2; K.s3P=s3; K.s4P=s4;
+    }
+    ghosts.push({ x:p.x, y:p.y, w:p.w, h:p.h, facing:p.facing, char:p.char, life:18, max:18 });
+    if(R.idx >= R.frames.length){ p.naoReplay=null; announce('重 演完 畢', 36, '#a8d878'); }
+  }
+  /* 投射咒法：记录 / 回溯 / 选择 / 重现 期间 —— 对手被定格在画面里，直到投射结束 */
+  if(p.char==='naoya'){
+    const foeP = players[1-p.id];
+    if(naoProjActive(p) && foeP.hp>0 && !naoProjActive(foeP)) foeP.frozen = Math.max(foeP.frozen, 2);   // 每帧续命，投射一停就解冻
+  }
+  /* 投射咒法·记录：正常行动的同时每帧采集输入（记满即停） */
+  if(p.naoRec && !p.naoRec.done) updateNaoRecord(p, K);
+  /* 咒言指令：倒计时 + 是否遵守 */
+  if(p.naoCmd && state==='fight') checkNaoCmd(p);
+  if(p.frozen>0 && p.state!=='naoPin') p.state = p.state;   // 定住期间姿势僵直（state 交给 frozen 分支）
+  if(p.frozen>0) p.state='frozen';
+  if(p.frozen<=0 && p.state==='frozen') p.state='idle';
   p.blocking = K.down && p.onGround &&
     p.state!=='hollowCharge' && p.state!=='hollowFire' &&
     p.state!=='flameCharge' && p.state!=='grabbing' && p.state!=='grabStart';
@@ -1579,11 +1945,12 @@ function updatePlayer(p, foe, k){
   /* ---------- 释放后摇 ---------- */
   else if(p.state==='hollowFire'){
     p.vx *= 0.8;
-    if(p.stateT>44) p.state='idle';
+    if(p.stateT>30) p.state='idle';          // 后摇 44 → 30，放完更快回到机动
   }
   /* ---------- 领域展开：结印（被打断则中止） ---------- */
   else if(p.state==='domain'){
     p.vx *= 0.7;
+    if(!p.onGround) p.vy = Math.min(p.vy, 1.6);              // 空中展开：结印时几乎悬停，不会被重力拽下去
     if(p.stun>0 || state!=='fight' || !domain || domain.owner!==p.id){
       if(domain && domain.owner===p.id) domain = null;
       p.state='idle';
@@ -1627,7 +1994,7 @@ function updatePlayer(p, foe, k){
   /* ---------- 解：挥出后摇 ---------- */
   else if(p.state==='cleaveFire'){
     p.vx *= 0.78;
-    if(p.stateT>22) p.state='idle';
+    if(p.stateT>15) p.state='idle';          // 后摇 22 → 15
   }
   /* ---------- 捌：踏步接近 ---------- */
   else if(p.state==='grabStart'){
@@ -1658,7 +2025,7 @@ function updatePlayer(p, foe, k){
   /* ---------- 捌：刀光后摇 ---------- */
   else if(p.state==='grabEnd'){
     p.vx *= 0.8;
-    if(p.stateT>26) p.state='idle';
+    if(p.stateT>18) p.state='idle';          // 后摇 26 → 18
   }
   /* ---------- 灶·开：蓄力 ---------- */
   else if(p.state==='flameCharge'){
@@ -1680,7 +2047,7 @@ function updatePlayer(p, foe, k){
   /* ---------- 灶·开：释放后摇 ---------- */
   else if(p.state==='flameFire'){
     p.vx *= 0.8;
-    if(p.stateT>38) p.state='idle';
+    if(p.stateT>26) p.state='idle';          // 后摇 38 → 26
   }
   /* ---------- 冲拳：暴起前冲，把敌人击飞 ---------- */
   else if(p.state==='dashPunch'){
@@ -1701,12 +2068,12 @@ function updatePlayer(p, foe, k){
       ring(ax, ay, '#ffffff', 130, 5);
       spawnParticles(ax, ay, 18, '#ffb08a', 7, 26, 4, 0.2);
     }
-    if(p.stateT>30) p.state='idle';
+    if(p.stateT>25) p.state='idle';          // 后摇 30 → 25
   }
   /* ---------- 穿血：释放后摇 ---------- */
   else if(p.state==='bloodFire'){
     p.vx *= 0.8;
-    if(p.stateT>26) p.state='idle';
+    if(p.stateT>18) p.state='idle';          // 后摇 26 → 18
   }
   /* ---------- 解（虎杖）：拉出横贯全场的裁剪线 ---------- */
   else if(p.state==='ycutCharge'){
@@ -1722,7 +2089,7 @@ function updatePlayer(p, foe, k){
   /* ---------- 解（虎杖）：斩开后摇 ---------- */
   else if(p.state==='ycutFire'){
     p.vx *= 0.8;
-    if(p.stateT>24) p.state='idle';
+    if(p.stateT>16) p.state='idle';          // 后摇 24 → 16
   }
   /* ---------- 突刺：向前突刺，命中则填充术式 ---------- */
   else if(p.state==='thrust'){
@@ -1739,12 +2106,12 @@ function updatePlayer(p, foe, k){
       ring(ax, ay, '#7fd0ff', 90, 4);
       spawnParticles(ax, ay, 12, '#7fd0ff', 5, 20, 4, 0.2);
     }
-    if(p.stateT>25) p.state='idle';
+    if(p.stateT>21) p.state='idle';          // 后摇 25 → 21
     // 取消手感：突刺末段可用闪避 / 跳跃收招，也能直接接技能打连段
-    if(p.stateT>=18){
+    if(p.stateT>=15){
       if(K.dodgeP) tryDodge(p, K);
       else if(K.upP && p.onGround){ consume(k.up); p.state='idle'; doJump(p,false); }
-      else if(p.stateT>20) trySkills(p, k, K);
+      else if(p.stateT>17) trySkills(p, k, K);
     }
   }
   /* ---------- 袈裟斬：大幅踏步前冲，斜劈一刀 ---------- */
@@ -1762,18 +2129,18 @@ function updatePlayer(p, foe, k){
       ring(ax, ay, '#dce8ff', 110, 5);
       spawnParticles(ax, ay, 18, '#dce8ff', 6, 26, 4, 0.2);
     }
-    if(p.stateT>28) p.state='idle';
+    if(p.stateT>24) p.state='idle';          // 后摇 28 → 24
     // 取消手感：砍完之后同样可以闪避 / 跳跃 / 接技能
-    if(p.stateT>=20){
+    if(p.stateT>=17){
       if(K.dodgeP) tryDodge(p, K);
       else if(K.upP && p.onGround){ consume(k.up); p.state='idle'; doJump(p,false); }
-      else if(p.stateT>22) trySkills(p, k, K);
+      else if(p.stateT>19) trySkills(p, k, K);
     }
   }
   /* ---------- 术式模仿：释放后摇 ---------- */
   else if(p.state==='mimicFire'){
     p.vx *= 0.8;
-    if(p.stateT>24) p.state='idle';                  // 后摇更短，打完能马上接突刺 / 袈裟斬
+    if(p.stateT>16) p.state='idle';          // 后摇 24 → 16，打完马上接突刺 / 袈裟斬
   }
   /* ---------- 纯爱大炮：起手凝聚 → 迸发 → 持续喷射 → 收束 ---------- */
   else if(p.state==='cannonFire'){
@@ -1834,8 +2201,8 @@ function updatePlayer(p, foe, k){
     p.vx *= 0.75;
     if(p.stateT===5) castBlue(p);
     // 施法动作后半段即可衔接下一招（方便 苍→赫 连携）
-    if(p.stateT>12) trySkills(p, k, K);
-    if(p.stateT>22) p.state='idle';
+    if(p.stateT>8) trySkills(p, k, K);
+    if(p.stateT>16) p.state='idle';          // 后摇 22 → 16
   }
   /* ---------- 赫：按住决定 停留 / 冲击 ---------- */
   else if(p.state==='red'){
@@ -1905,6 +2272,78 @@ function updatePlayer(p, foe, k){
     if(T>=12){ if(K.punchP){ consume(k.punch, k.punch2); p.state='punch'; p.stateT=0; p.atkStep=1; p.atkHit=false; }
                else trySkills(p, k, K); }
   }
+  /* ---------- 空间斩：蓄力 / 落刀 / 裂屏 / 破绽（宿傩丝血必杀） ---------- */
+  else if(p.state==='wsCharge' || p.state==='wsSlash' || p.state==='wsOpen' || p.state==='wsBreak'){
+    updateWorldSlash(p, foe);
+  }
+  /* ---------- 投射咒法：回溯 / 选择是否重现 ---------- */
+  else if(p.state==='naoRewind'){
+    updateNaoRewind(p);
+  }
+  else if(p.state==='naoChoose'){
+    p.vx *= 0.6; p.blocking = false;
+    if(p.stun>0){ p.naoRec=null; p.state='idle'; announce('回 溯 中 断', 40, '#ff8090'); }
+    else if(p.stateT>120 || K.s4P){                     // 超时 / 按 R：放弃重现
+      p.naoRec=null; p.state='idle';
+      announce('不 重 现', 36, '#8f9bc0');
+    }
+    else if(K.s3P){                                     // 按 F：重现！
+      p.naoReplay = { frames:p.naoRec.frames, idx:0 };
+      p.naoRec = null; p.state='idle'; p.stateT=0;
+      announce('投 射 · 重 現 !', 60, '#a8d878', '1 秒内极速重演记录的行动');
+      shake = Math.max(shake, 6);
+    }
+  }
+  else if(p.state==='frozen'){                          // 被咒言钉住：完全不能动
+    p.vx *= 0.7; p.blocking = false;
+    p.frozen--;
+    if(Math.random()<0.3) spawnParticles(p.x+rand(-24,24), p.y-rand(20,100), 1, '#ffd24a', 1.5, 16, 3, 0);
+    if(p.frozen<=0){ p.state='idle'; p.stateT=0; }
+  }
+  else if(p.state==='naoCmd'){                          // 咒言指令：突进触碰
+    p.vx = p.facing*13; p.blocking = false;
+    if(p.stateT%2===0) ghosts.push({ x:p.x, y:p.y, w:p.w, h:p.h, facing:p.facing, char:p.char, life:14, max:14 });
+    if(foe.hp>0 && foe.invul<=0 && !foe.naoCmd && Math.abs(foe.x-p.x)<70 && Math.abs(foe.y-p.y)<95){
+      applyNaoCmd(p, foe);
+    } else if(p.stateT>18){
+      p.state='idle';
+      announce('投 射 · 落 空', 30, '#8f9bc0');
+    }
+  }
+  else if(p.state==='naoSlash'){                        // 居合斩：瞬身挥刀（吃移动加成）
+    const T = p.stateT;
+    p.blocking = false;
+    if(T<10){ p.vx *= 0.8; }
+    else if(T<16){ p.vx = p.facing*17; }                // 瞬身
+    else p.vx *= 0.7;
+    if(T===14) ghosts.push({ x:p.x, y:p.y, w:p.w, h:p.h, facing:p.facing, char:p.char, life:20, max:20 });
+    if(T===16 && !p.atkHit){
+      if(foe.hp>0 && Math.abs(foe.x-p.x)<95 && Math.abs((foe.y-foe.h*0.5)-(p.y-p.h*0.55))<95){
+        p.atkHit = true;
+        damage(p, foe, 26, p.facing*11, 5, 34, 'naoslash');
+        ring(p.x+p.facing*50, p.y-p.h*0.55, '#ffffff', 130, 5);
+        shake = Math.max(shake, 9); hitStop = Math.max(hitStop, 5);
+      }
+    }
+    if(T>26){ p.state='idle'; p.atkHit=false; }
+  }
+  else if(p.state==='naoFist'){                         // 时轮金刚·终结一拳
+    const T = p.stateT;
+    p.blocking = false;
+    if(T<18){ p.vx *= 0.7; if(T%2===0) ghosts.push({ x:p.x, y:p.y, w:p.w, h:p.h, facing:p.facing, char:p.char, life:12, max:12 }); }
+    else if(T<30){ p.vx = p.facing*22;
+      if(T%2===0) ghosts.push({ x:p.x, y:p.y, w:p.w, h:p.h, facing:p.facing, char:p.char, life:16, max:16 });
+      if(!p.atkHit && foe.hp>0 && Math.abs(foe.x-p.x)<85 && Math.abs(foe.y-p.y)<110){
+        p.atkHit = true;
+        damage(p, foe, 35, p.facing*16, 9, 46, 'nao');
+        ring(p.x+p.facing*55, p.y-p.h*0.55, '#ffffff', 240, 8);
+        ring(p.x+p.facing*55, p.y-p.h*0.55, '#a8d878', 190, 6);
+        flash = Math.max(flash, 0.7); shake = Math.max(shake, 24); hitStop = Math.max(hitStop, 12);
+        zoom = Math.max(zoom, 1.25);
+      }
+    } else p.vx *= 0.75;
+    if(T>42){ p.state='idle'; p.atkHit=false; }
+  }
   /* ---------- 普通状态 ---------- */
   else {
     let mv = 0;
@@ -1913,7 +2352,8 @@ function updatePlayer(p, foe, k){
     if(!p.blocking){
       // 地面响应干脆（起步即满速），空中保留惯性与操控
       if(mv!==0){
-        const target = mv*(p.onGround? 5.9 : 5.2);
+        const rush = domain && domain.owner===p.id && domain.kind==='nao';   // 时轮金刚：速度提升到极致
+        const target = mv*((p.onGround? 5.9 : 5.2) * (rush? 1.75 : 1));
         // 同向：立刻满速，跟手；反向急转：2~3 帧过渡，不会生硬地瞬间掉头
         p.vx = p.onGround? (mv*p.vx < 0? p.vx + (target-p.vx)*0.45 : target)
                           : p.vx + (target-p.vx)*0.30;
@@ -1943,6 +2383,7 @@ function updatePlayer(p, foe, k){
   }
   p.vy += g;
   p.x += p.vx; p.y += p.vy;
+  if(p.char==='naoya') p.moveDist += Math.abs(p.vx);   // 直哉：累计移动距离（攻击命中 / 被击中时清零）
   if(p.y >= GROUND){
     if(!p.onGround){
       const impact = p.vy;
@@ -2195,6 +2636,176 @@ function drawGojo(p, t){
       ctx.fillStyle='#ffd24a'; ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
       ctx.fillText('MAX', cx, cy-46);
     }
+  }
+
+  ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
+  ctx.fillStyle = p.id===0? '#5aa0ff':'#ff7080';
+  ctx.fillText(p.id===0?'P1':(vsCPU?'CPU':'P2'), x, headY-38);
+}
+
+/* ================= 禅院直哉 绘制 =================
+   浅绿色碎短发（一模一样的发型）· 圆形 Q 版脸无五官 · 深蓝和服 + 白色内衬 */
+function drawNaoya(p, t){
+  const f = p.facing;
+  const x = p.x, y = p.y;
+  let lean=0, armAngle=0, armLen=0, legSplit=0, crouch=0, auraColor=null, sealArms=false;
+  const st = p.state;
+
+  if(st==='walk'){ legSplit = Math.sin(p.stateT*0.25)*10; lean = f*3; }
+  if(st==='jump'){ legSplit = 6; crouch = 4; }
+  if(p.landSquash>0 && (st==='idle'||st==='walk')) crouch = p.landSquash*0.7;
+  if(st==='block'){ crouch = 10; lean = -f*4; }
+  if(st==='punch'){
+    const s = p.atkStep, st_ = p.stateT;
+    if(s===1){ const k=Math.min(1,st_/5); armAngle = f*(0.2-k*0.9);  armLen = 20+k*54; lean = f*k*5; }
+    if(s===2){ const k=Math.min(1,st_/4); armAngle = f*(-0.5-k*0.6); armLen = 24+k*58; lean = f*k*7; }
+    if(s===3){ const k=Math.min(1,st_/7); armAngle = f*(-0.2+k*0.5); armLen = 26+k*50; lean = -f*k*8; crouch = 10*k; }
+  }
+  if(p.naoRec){ armAngle = f*1.2; armLen = 30; crouch = 4; auraColor='rgba(168,216,120,0.55)'; }             // 记录：结印
+  if(st==='naoRewind'){ lean = -f*7; armAngle = f*1.5; armLen = 44; auraColor='rgba(168,216,120,0.7)'; }     // 回溯：后仰张手
+  if(st==='naoChoose'){ armAngle = f*1.3; armLen = 36; crouch = 6; auraColor='rgba(168,216,120,0.6)'; }      // 等待选择
+  if(st==='naoCmd'){ lean = f*12; armAngle = f*1.5; armLen = 62; }                                            // 突进触碰
+  if(st==='naoSlash'){                                                                                        // 居合斩
+    if(p.stateT<14){ lean = -f*9; crouch = 8; armAngle = f*1.6; armLen = 30; }
+    else { lean = f*13; armAngle = f*(-0.9); armLen = 74; }
+  }
+  if(st==='naoFist'){
+    if(p.stateT<18){ lean = -f*12; crouch = 12; armAngle = f*(-0.7); armLen = 20; auraColor='rgba(168,216,120,0.8)'; }
+    else { lean = f*14; armAngle = f*(-0.35); armLen = 82; }
+  }
+  if(st==='down'){ crouch = 70; }
+  if(st==='frozen'){ lean = -f*4; crouch = 4; }
+  if(p.stun>0){ lean = -f*8*Math.sin(t*0.05); }
+
+  const bodyY = y - crouch;
+  const headR = 20;                                  // Q 版：头更大
+  const hipY = bodyY - 50;
+  const shoulderY = bodyY - 88;
+  const headY = shoulderY - headR - 2;
+
+  if(auraColor || p.energy>=100){
+    const ac = auraColor || 'rgba(168,216,120,0.4)';
+    const g = ctx.createRadialGradient(x, bodyY-58, 10, x, bodyY-58, 90);
+    g.addColorStop(0, ac); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x, bodyY-58, 88+Math.sin(t*0.01)*6, 0, 7); ctx.fill();
+  }
+  if(p.naoReplay){                                   // 重演：周身绿色时序光环
+    ctx.strokeStyle='rgba(168,216,120,0.6)'; ctx.lineWidth=2;
+    for(let i=1;i<=2;i++){
+      ctx.globalAlpha = 0.5/i;
+      ctx.beginPath(); ctx.arc(x, bodyY-58, 46+i*13+Math.sin(t*0.02)*4, 0, 7); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+
+  ctx.fillStyle='rgba(0,0,0,0.4)';
+  ctx.beginPath(); ctx.ellipse(x, GROUND+6, 34, 8, 0, 0, 7); ctx.fill();
+
+  ctx.save();
+  ctx.translate(x, bodyY); ctx.rotate(lean*Math.PI/180); ctx.translate(-x, -bodyY);
+
+  // 腿（和服裤：深蓝）
+  ctx.strokeStyle='#232c44'; ctx.lineWidth=13; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(x, hipY); ctx.lineTo(x-8-legSplit, bodyY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, hipY); ctx.lineTo(x+8+legSplit, bodyY); ctx.stroke();
+  ctx.strokeStyle='#161c2c'; ctx.lineWidth=8;
+  ctx.beginPath(); ctx.moveTo(x-10-legSplit, bodyY); ctx.lineTo(x-13-legSplit, bodyY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+10+legSplit, bodyY); ctx.lineTo(x+13-legSplit*-1, bodyY); ctx.stroke();
+
+  // 和服（深蓝）+ 白色内衬 + 腰带
+  ctx.fillStyle='#2a3a5e';
+  ctx.beginPath();
+  ctx.moveTo(x-18, hipY+4); ctx.lineTo(x-20, shoulderY);
+  ctx.lineTo(x+20, shoulderY); ctx.lineTo(x+18, hipY+4);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#e8ecf2';                                             // 白内衬：胸口 V 领
+  ctx.beginPath();
+  ctx.moveTo(x-11, shoulderY); ctx.lineTo(x+f*4, shoulderY+30); ctx.lineTo(x+11, shoulderY);
+  ctx.lineTo(x+7, shoulderY+4); ctx.lineTo(x-7, shoulderY+4);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle='#c8d0dc'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(x-11, shoulderY+2); ctx.lineTo(x+f*4, shoulderY+30); ctx.lineTo(x+11, shoulderY+2); ctx.stroke();
+  ctx.fillStyle='#1a2236';                                             // 腰带
+  rr(x-19, hipY-14, 38, 12, 3); ctx.fill();
+  ctx.fillStyle='#3a4a6e'; rr(x+f*13-4, hipY-15, 8, 14, 2); ctx.fill();
+
+  // 手臂
+  const shx = x + f*15, shy = shoulderY+9;
+  const handX = shx + Math.sin(armAngle)*armLen*f + (armAngle===0? f*8:0);
+  const handY = shy + Math.cos(armAngle)*armLen + (armAngle===0? 26:0);
+  ctx.strokeStyle='#2a3a5e'; ctx.lineWidth=11;
+  ctx.beginPath(); ctx.moveTo(shx - f*7, shy); ctx.lineTo(shx - f*11, shy+32); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(shx, shy); ctx.lineTo(handX, handY); ctx.stroke();
+  ctx.fillStyle='#e8c9a8';
+  ctx.beginPath(); ctx.arc(handX, handY, 6, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(shx-f*11, shy+32, 5.5, 0, 7); ctx.fill();
+
+  // 头：圆形 Q 版脸，没有五官
+  ctx.fillStyle='#f2d4b0';
+  ctx.beginPath(); ctx.arc(x+f*3, headY, headR, 0, 7); ctx.fill();
+
+  // 浅绿色碎短发：短而密的尖刺 + 头顶弧
+  ctx.fillStyle='#4ac95a';                                            // 纯绿碎短发
+  for(let i=-4;i<=4;i++){
+    const a = -Math.PI/2 + i*0.30 - f*0.08;
+    const bx = x+f*3 + Math.cos(a)*headR*0.86;
+    const by = headY + Math.sin(a)*headR*0.86;
+    const ex = x+f*3 + Math.cos(a)*(headR+7+Math.sin(t*0.007+i*1.7)*1.5);
+    const ey = headY + Math.sin(a)*(headR+7);
+    ctx.beginPath(); ctx.moveTo(bx-4.5, by); ctx.lineTo(ex, ey); ctx.lineTo(bx+4.5, by); ctx.closePath(); ctx.fill();
+  }
+  ctx.beginPath(); ctx.arc(x+f*3, headY-5, headR+0.5, Math.PI*1.02, Math.PI*1.98); ctx.fill();
+  ctx.fillStyle='#96b358';                                            // 发丝暗部
+  ctx.beginPath(); ctx.arc(x+f*3 - f*4, headY-8, headR*0.55, Math.PI*1.1, Math.PI*1.9); ctx.fill();
+
+  // 耳钉（两张特写里的小耳钉）
+  ctx.fillStyle='#d8b84a';
+  ctx.beginPath(); ctx.arc(x+f*3 - f*headR*0.92, headY+2, 2, 0, 7); ctx.fill();
+
+  if(st==='punch'){
+    const s = p.atkStep;
+    const act = s===1?5:(s===2?4:7);
+    const d = p.stateT - act;
+    if(d>=0 && d<7){
+      const a = 1 - d/7;
+      ctx.globalAlpha = a;
+      let a0, a1, ccw;
+      if(s===3){ a0 = 1.0; a1 = -1.0; ccw = true; }
+      else     { a0 = -0.55; a1 = 0.55; ccw = false; }
+      if(f<0){ const t0=Math.PI-a0, t1=Math.PI-a1; a0=t0; a1=t1; ccw=!ccw; }
+      ctx.lineCap='round';
+      ctx.strokeStyle='rgba(255,255,255,0.85)'; ctx.lineWidth = 7*a+1;
+      ctx.beginPath(); ctx.arc(handX, handY, 26+d*3, a0, a1, ccw); ctx.stroke();
+      if(d<3){
+        ctx.fillStyle='rgba(255,255,255,'+(0.45*(1-d/3))+')';
+        ctx.beginPath(); ctx.arc(handX, handY, 15+d*6, 0, 7); ctx.fill();
+      }
+      ctx.globalAlpha=1;
+    }
+  }
+  if(st==='naoSlash' && p.stateT>=14 && p.stateT<24){                 // 居合斩刀光
+    const k = 1-(p.stateT-14)/10;
+    ctx.globalAlpha = k;
+    ctx.strokeStyle='#ffffff'; ctx.lineWidth = 5*k+1; ctx.lineCap='round';
+    ctx.beginPath(); ctx.arc(x, bodyY-55, 60, f>0? -0.9 : Math.PI-0.9, f>0? 0.9 : Math.PI+0.9, f<0); ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  if(p.hitFlash>0 && p.hitFlash%4<2){
+    ctx.globalCompositeOperation='source-atop';
+    ctx.fillStyle='rgba(255,80,90,0.55)';
+    ctx.beginPath(); ctx.arc(x, bodyY-55, 70, 0, 7); ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+  }
+  ctx.restore();
+
+  // 记录中：头顶进度 + 「録」
+  if(p.naoRec){
+    const k = p.naoRec.frames.length/PROJ_FRAMES;
+    ctx.font='bold 12px "Microsoft YaHei", sans-serif'; ctx.textAlign='center';
+    ctx.fillStyle='#a8d878';
+    ctx.fillText('録 ' + (p.naoRec.frames.length/60).toFixed(1) + 's / 5.0s', x, headY-34);
+    ctx.fillStyle='rgba(8,12,28,0.7)'; ctx.fillRect(x-26, headY-30, 52, 6);
+    ctx.fillStyle='#a8d878'; ctx.fillRect(x-26, headY-30, 52*k, 6);
   }
 
   ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
@@ -2862,7 +3473,8 @@ function drawGhosts(){                     // 闪避残影：画在角色之下
 }
 
 function drawChar(p, t){
-  if(p.char==='sukuna') drawSukuna(p, t);
+  if(p.char==='naoya') drawNaoya(p, t);
+  else if(p.char==='sukuna') drawSukuna(p, t);
   else if(p.char==='yuji') drawYuji(p, t);
   else if(p.char==='yuta') drawYuta(p, t);
   else drawGojo(p, t);
@@ -2934,6 +3546,90 @@ function drawMiniOrb(x, y, r, col, colEnd){
 }
 
 // ===== 虚式·茈：全屏释放演出 =====
+/* ================= 空间斩演出：屏幕斜切成两半，中间是黑切的缝 ================= */
+let wsBuf = null, wsBufG = null;
+function drawWorldSlash(t){
+  if(!wsFx) return;
+  const w = wsFx, cx = W/2, cy = H/2;
+  const dx = Math.cos(w.ang), dy = Math.sin(w.ang);     // 切线方向
+  const nx = -dy, ny = dx;                              // 切线法线
+  const L  = W + H;
+
+  /* ---- 画面裂开：整幅沿切线切成两半错位推开，露出的缝隙就是纯黑 ---- */
+  if(w.openT > 0 && w.gap > 0.01){
+    if(!wsBuf){ wsBuf = document.createElement('canvas'); wsBuf.width = W; wsBuf.height = H;
+                wsBufG = wsBuf.getContext('2d'); }
+    wsBufG.clearRect(0, 0, W, H);
+    wsBufG.drawImage(cv, 0, 0);                         // 先把这一帧整个拷下来
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);   // 整屏压黑 → 错开的地方就是黑缝
+    const sep = 4 + w.gap*30;
+    const half = (sg, ox, oy)=>{
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(cx + dx*L  + nx*sg*2,    cy + dy*L  + ny*sg*2);
+      ctx.lineTo(cx - dx*L  + nx*sg*2,    cy - dy*L  + ny*sg*2);
+      ctx.lineTo(cx - dx*L  + nx*sg*L*2,  cy - dy*L  + ny*sg*L*2);
+      ctx.lineTo(cx + dx*L  + nx*sg*L*2,  cy + dy*L  + ny*sg*L*2);
+      ctx.closePath(); ctx.clip();
+      ctx.drawImage(wsBuf, ox, oy);
+      ctx.restore();
+    };
+    half( 1,  nx*sep,  ny*sep);          // 半屏：往法线正方向推开
+    half(-1, -nx*sep, -ny*sep);          // 另半屏：往反方向推开
+    // 切缝内部涂成纯黑（空间被斩断的虚无），热光只留在缝的两缘
+    ctx.save();
+    ctx.translate(cx, cy); ctx.rotate(w.ang);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(-L, -(sep - 4), L*2, (sep - 4)*2);
+    for(const sg of [-1, 1]){
+      const ey = sg * (sep + 2);
+      const g = ctx.createLinearGradient(0, ey, 0, ey + sg*44);
+      g.addColorStop(0, 'rgba(255,225,235,' + (0.7*w.gap) + ')');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(-L, Math.min(ey, ey + sg*44), L*2, 44);
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.95*w.gap) + ')';
+      ctx.fillRect(-L, ey - 1.5, L*2, 3);
+    }
+    ctx.restore();
+  }
+
+  /* ---- 预警：屏幕上方倒计时 + 斜向预切线 ---- */
+  if(w.phase === 'charge'){
+    const k = 1 - w.left/WS_CHARGE;                     // 0 → 1：越来越险
+    ctx.save();
+    ctx.translate(cx, cy); ctx.rotate(w.ang);
+    ctx.shadowBlur = 20; ctx.shadowColor = 'rgba(255,80,96,0.9)';
+    ctx.strokeStyle = 'rgba(255,80,96,' + (0.22 + k*0.55) + ')';
+    ctx.lineWidth = 1 + k*3;
+    ctx.beginPath(); ctx.moveTo(-L, 0); ctx.lineTo(L, 0); ctx.stroke();
+    ctx.restore();
+
+    const urgent = w.left <= 30;
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 27px "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = '#ff8090';
+    ctx.shadowBlur = 12; ctx.shadowColor = 'rgba(255,60,90,0.9)';
+    ctx.fillText('空 间 斩 来 袭', W/2, 122);
+    ctx.shadowBlur = 0;
+    // 倒计时条
+    const bw = 380, bh = 11, bx = W/2 - bw/2, by = 134;
+    ctx.fillStyle = 'rgba(8,12,28,0.72)'; ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = urgent? '#ffffff' : '#ff5060'; ctx.fillRect(bx, by, bw*k, bh);
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.strokeRect(bx, by, bw, bh);
+    // 大号倒计时读数
+    const fs = urgent? 78 + Math.sin(t/40)*7 : 60;
+    ctx.font = 'bold ' + fs + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = urgent? (Math.sin(t/30) > 0? '#ffffff' : '#ff8090') : '#ffd2da';
+    ctx.fillText((w.left/60).toFixed(2) + 's', W/2, 226);
+    ctx.font = 'bold 21px "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = urgent? '#ffd24a' : '#9fb6d8';
+    ctx.fillText(urgent? '现 在 —— 闪 避 !' : '看准切线落下的那一瞬间', W/2, 260);
+    ctx.restore();
+  }
+}
+
 function drawHollowCutIn(t){
   const cx = W/2, cy = H*0.46;
   for(const p of players){
@@ -3390,6 +4086,129 @@ function drawTrainTip(){
   ctx.fillText(txt, W/2, H-21);
   ctx.restore();
 }
+/* ================= 直哉 UI：被动字幕 / 咒言指令 / 重现选择 / 漫画定格 ================= */
+/* 投射咒法：对手视角 —— 上方字幕「投 射 咒 法」+ 画面定格演出（黑边 / 被定格者框选） */
+let naoFreezeT = 0;
+function drawNaoFreeze(proj, foe, t){
+  naoFreezeT++;
+  const k = Math.min(1, naoFreezeT/8);                       // 淡入
+  const bar = 32*k;
+  ctx.fillStyle = 'rgba(5,7,14,0.9)';                        // 电影黑边：画面像被按了暂停
+  ctx.fillRect(0, 0, W, bar); ctx.fillRect(0, H-bar, W, bar);
+  ctx.strokeStyle = 'rgba(168,216,120,'+(0.45*k)+')'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0,bar); ctx.lineTo(W,bar);
+  ctx.moveTo(0,H-bar); ctx.lineTo(W,H-bar); ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 30px "Microsoft YaHei", sans-serif';
+  ctx.strokeStyle = 'rgba(6,8,20,0.9)'; ctx.lineWidth = 5;
+  const s = '投 射 咒 法';
+  ctx.strokeText(s, W/2, bar + 42);
+  ctx.fillStyle = Math.sin(t/14)>0? '#ffffff' : '#a8d878';
+  ctx.fillText(s, W/2, bar + 42);
+  let ph = naoProjPhase(proj);
+  if(proj.naoRec) ph += '　' + (proj.naoRec.frames.length/60).toFixed(1) + 's / 5.0s';
+  ctx.font = 'bold 15px "Microsoft YaHei", sans-serif';
+  ctx.strokeStyle = 'rgba(6,8,20,0.85)'; ctx.lineWidth = 3.5;
+  ctx.strokeText(ph, W/2, bar + 64);
+  ctx.fillStyle = '#c8e8a0'; ctx.fillText(ph, W/2, bar + 64);
+  if(!foe || foe.hp<=0) return;
+  /* 被定格在画面里的对手：虚线框 + 四角标记 + 「定 格」 */
+  const sx = ((foe.x - camX) - W/2)*zoom + W/2, sy = (foe.y - H/2)*zoom + H/2;
+  const bw = foe.w*zoom, bh = foe.h*zoom;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,'+(0.75*k)+')'; ctx.lineWidth = 2;
+  ctx.setLineDash([7,5]);
+  ctx.strokeRect(sx-bw/2-10, sy-bh-12, bw+20, bh+22);
+  ctx.setLineDash([]);
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,'+(0.95*k)+')';
+  const c = 14, x0 = sx-bw/2-10, x1 = sx+bw/2+10, y0 = sy-bh-12, y1 = sy+10;
+  for(const [px,py,dx,dy] of [[x0,y0,1,1],[x1,y0,-1,1],[x0,y1,1,-1],[x1,y1,-1,-1]]){
+    ctx.beginPath(); ctx.moveTo(px+dx*c, py); ctx.lineTo(px, py); ctx.lineTo(px, py+dy*c); ctx.stroke();
+  }
+  ctx.font = 'bold 13px "Microsoft YaHei", sans-serif';
+  ctx.strokeStyle = 'rgba(6,8,20,0.85)'; ctx.lineWidth = 3;
+  ctx.strokeText('定 格', sx, y0-9);
+  ctx.fillStyle = '#ffffff'; ctx.fillText('定 格', sx, y0-9);
+  ctx.restore();
+}
+function drawNaoUI(t){
+  if(state!=='fight' && state!=='ko') return;
+  ctx.textAlign='center';
+  /* 投射咒法生效中：对手视角 —— 上方字幕「投 射 咒 法」+ 画面定格演出 */
+  const proj = players.find(p=> p.char==='naoya' && naoProjActive(p));
+  const frozenFoe = proj? players[1-proj.id] : null;
+  if(proj) drawNaoFreeze(proj, frozenFoe, t); else naoFreezeT = 0;
+  /* 被动字幕：屏幕上方 —— 移动蓄力倍率（投射时下移，给上方字幕让位） */
+  const subY = proj? 122 : 58;
+  players.forEach(p=>{
+    if(p.char!=='naoya') return;
+    const both = players[1-p.id].char==='naoya';
+    const x = both? (p.id===0? W*0.43 : W*0.57) : W/2;
+    const mul = naoMul(p), hot = mul>1.5;
+    const s = '移 動 蓄 力 ×' + mul.toFixed(2);
+    ctx.font='bold 15px "Microsoft YaHei", sans-serif';
+    ctx.strokeStyle='rgba(6,8,20,0.8)'; ctx.lineWidth=3.5;
+    ctx.strokeText(s, x, subY);
+    ctx.fillStyle = hot? (Math.sin(t/18)>0? '#ffffff':'#ffd24a') : '#a8d878';
+    ctx.fillText(s, x, subY);
+  });
+  /* 咒言指令：被指令者屏幕中央大字幕 + 倒计时条 */
+  players.forEach(p=>{
+    const c = p.naoCmd;
+    if(!c) return;
+    const urgent = c.t<=40;
+    const txt = CMD_TEXT[c.type];
+    ctx.font='bold 30px "Microsoft YaHei", sans-serif';
+    ctx.strokeStyle='rgba(6,8,20,0.85)'; ctx.lineWidth=5;
+    ctx.strokeText(txt, W/2, 252);
+    ctx.fillStyle = urgent? (Math.sin(t/25)>0?'#ffffff':'#ff5060') : '#ffd24a';
+    ctx.fillText(txt, W/2, 252);
+    const bw=300, bx=W/2-bw/2, by=270;
+    ctx.fillStyle='rgba(8,12,28,0.72)'; ctx.fillRect(bx,by,bw,9);
+    ctx.fillStyle= urgent? '#ff5060' : '#ffd24a'; ctx.fillRect(bx,by,bw*c.t/CMD_TIME,9);
+    ctx.strokeStyle='rgba(255,255,255,0.4)'; ctx.lineWidth=1; ctx.strokeRect(bx,by,bw,9);
+  });
+  /* 投射咒法：回溯完毕，选择是否重现 */
+  players.forEach(p=>{
+    if(p.state!=='naoChoose') return;
+    const blink = Math.sin(t/16)>0;
+    const s = 'F 重 現　／　R 放 棄';
+    ctx.font='bold 30px "Microsoft YaHei", sans-serif';
+    ctx.strokeStyle='rgba(6,8,20,0.85)'; ctx.lineWidth=5;
+    ctx.strokeText(s, W/2, 252);
+    ctx.fillStyle = blink? '#ffffff':'#a8d878';
+    ctx.fillText(s, W/2, 252);
+    ctx.font='bold 16px "Microsoft YaHei", sans-serif';
+    ctx.fillStyle='#8f9bc0';
+    ctx.fillText('重現＝1 秒内极速重演记录的行动 · 期间技能免费', W/2, 284);
+  });
+  /* 被咒言钉住：漫画分格定格演出 */
+  if(naoPinFx){
+    const w = naoPinFx; w.t++;
+    if(w.t>w.max){ naoPinFx=null; }
+    else{
+      const a = w.t<6? w.t/6 : (w.t>w.max-12? (w.max-w.t)/12 : 1);
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.translate(W/2, H/2); ctx.rotate(-0.18);
+      for(let i=0;i<3;i++){
+        const yy = -H*0.45 + i*H*0.42 + Math.sin(i*2.1)*24;
+        ctx.fillStyle='rgba(245,245,240,0.92)';
+        ctx.fillRect(-W, yy, W*2, 9);
+        ctx.fillStyle='rgba(10,10,14,0.5)';
+        ctx.fillRect(-W, yy+9, W*2, 5);
+      }
+      ctx.restore();
+      ctx.globalAlpha = a;
+      ctx.font='bold ' + Math.round(56+Math.sin(w.t*0.3)*6) + 'px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = w.t%6<3? '#ffd24a' : '#ffffff';
+      ctx.strokeStyle='rgba(6,8,20,0.9)'; ctx.lineWidth=6;
+      ctx.strokeText('定 !', W/2, H*0.4);
+      ctx.fillText('定 !', W/2, H*0.4);
+      ctx.globalAlpha=1;
+    }
+  }
+}
 function drawSkillBars(){
   if(typeof touchOn !== 'undefined' && touchOn) return;   // 开着触屏按钮就不画键位条
   for(const p of players){
@@ -3560,16 +4379,34 @@ let runDone = false;           // 本次成绩是否已经处理过
 let lbPending = null;          // 待登记的成绩 {ch, sec}
 let lbMsg = '';                // KO 界面上给玩家的一句话
 const lbKey = ch => 'gojo_board_' + ch;
+/* 同一个人的同一角色只占一行：难度高的那条胜出，同难度则取更快的一次 */
+function lbBetter(a, b){ return (b.d||0) > (a.d||0) || ((b.d||0) === (a.d||0) && b.t < a.t); }
+function lbNorm(list){
+  const idx = new Map(), out = [];
+  for(const e of list){
+    if(!e || typeof e.t !== 'number') continue;
+    const n = String(e.n || '无名').trim().slice(0, 8) || '无名';
+    const it = { n, t:+e.t, d:+e.d | 0 }, k = n.toLowerCase();
+    if(!idx.has(k)){ idx.set(k, out.length); out.push(it); }
+    else if(lbBetter(out[idx.get(k)], it)) out[idx.get(k)] = { n: out[idx.get(k)].n, t: it.t, d: it.d };
+  }
+  out.sort((a,b)=> a.t-b.t);
+  return out;
+}
 function lbGet(ch){
-  try{ const a = JSON.parse(localStorage.getItem(lbKey(ch)) || '[]'); return Array.isArray(a)? a : []; }
+  try{ const a = JSON.parse(localStorage.getItem(lbKey(ch)) || '[]'); return lbNorm(Array.isArray(a)? a : []); }
   catch(_){ return []; }
 }
-function lbSave(ch, list){ try{ localStorage.setItem(lbKey(ch), JSON.stringify(list.slice(0, LB_MAX))); }catch(_){} }
+function lbSave(ch, list){ try{ localStorage.setItem(lbKey(ch), JSON.stringify(lbNorm(list).slice(0, LB_MAX))); }catch(_){} }
 function lbQualify(ch, sec){ const l = lbGet(ch); return l.length < LB_MAX || sec < l[LB_MAX-1].t; }
 function lbRank(ch, sec){ const l = lbGet(ch); let r = l.length+1; for(let i=0;i<l.length;i++) if(sec < l[i].t){ r = i+1; break; } return r; }
 function lbAdd(ch, name, sec){
-  const l = lbGet(ch);
-  l.push({ n:(String(name||'').trim().slice(0,8) || '无名'), t:Math.round(sec*100)/100, d:aiLevel });
+  const raw = String(name || '').trim().slice(0, 8) || '无名';
+  const l = lbGet(ch), t = Math.round(sec*100)/100, d = aiLevel;
+  const i = l.findIndex(e => String(e.n || '').toLowerCase() === raw.toLowerCase());
+  if(i >= 0){                                     // 同一个人：只在「更难」或「更快」时刷新自己那一行
+    if(lbBetter(l[i], { t, d })) l[i] = { n: l[i].n, t, d };
+  } else l.push({ n: raw, t, d });                // 不同的人：各占一行，都记录
   l.sort((a,b)=> a.t-b.t);
   lbSave(ch, l);
 }
@@ -3720,6 +4557,41 @@ function updateAI(p, foe){
 }
 
 /* ================= 领域展开 · 無量空処 ================= */
+/* 时轮金刚背景：绿色残影空间 + 环绕速度线 */
+function naoBackdrop(cx, cy, r, t){
+  /* 时轮金刚：绿色残影空间 —— 覆盖整个画面（不只是中间一块） */
+  const ccx = camX + W/2;                              // 世界坐标下的屏幕中心
+  const x0 = camX - 80, y0 = -80, w0 = W + 160, h0 = H + 160;
+  ctx.fillStyle = 'rgba(14,26,14,0.84)';
+  ctx.fillRect(x0, y0, w0, h0);
+  /* 全屏速度线：极致速度在空间里拉出的残影 */
+  ctx.strokeStyle = 'rgba(168,216,120,0.22)'; ctx.lineWidth = 2;
+  for(let i=0;i<34;i++){
+    const ly = y0 + ((i*83) % h0);
+    const len = 90 + ((i*37) % 280);
+    const lx = x0 + (((t*6 + i*137) % (w0 + 420)) - 210);
+    ctx.globalAlpha = 0.08 + ((i*29)%10)/55;
+    ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(lx+len, ly); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  /* 结界边缘：超大椭圆环 */
+  ctx.strokeStyle = 'rgba(168,216,120,0.16)'; ctx.lineWidth = 12;
+  ctx.beginPath(); ctx.ellipse(ccx, cy, r*1.75, r*1.3, 0, 0, 7); ctx.stroke();
+  ctx.strokeStyle = 'rgba(168,216,120,0.38)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.ellipse(ccx, cy, r*1.75, r*1.3, 0, 0, 7); ctx.stroke();
+  /* 环绕咒字 */
+  ctx.font = '13px serif'; ctx.textAlign = 'center'; ctx.globalAlpha = 0.5;
+  for(let i=0;i<12;i++){
+    const a = t*0.0006 + i/12*6.283;
+    ctx.fillStyle = '#a8d878';
+    ctx.fillText(NAO_GLYPHS[i%NAO_GLYPHS.length], ccx+Math.cos(a)*r*0.85, cy+Math.sin(a)*r*0.38+5);
+  }
+  ctx.textAlign = 'left'; ctx.globalAlpha = 1;
+  /* 四角暗角，把整个画面压进领域里 */
+  const vg = ctx.createRadialGradient(ccx, cy, r*0.25, ccx, cy, Math.max(w0, h0)*0.8);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(2,6,2,0.72)');
+  ctx.fillStyle = vg; ctx.fillRect(x0, y0, w0, h0);
+}
 function updateDomain(){
   if(!domain) return;
   const d = domain, p = players[d.owner], foe = players[1-d.owner];
@@ -3741,7 +4613,7 @@ function updateDomain(){
       damage(p, foe, 1, 0, 0, 0, 'domain');      // 仅象征性伤害：领域的价值在于压制本身
       if(foe.hp>0){
         // 無量空処＝彻底固定；伏魔御厨子＝只给一小段硬直；真赝相爱＝不加任何控制
-        if(d.kind!=='aiai'){
+        if(d.kind!=='aiai' && d.kind!=='nao'){
           foe.stun = (d.kind==='shrine' || d.kind==='nameless')? 34 : DOMAIN_HOLD + DOMAIN_CLOSE + 40;
           foe.vx = 0; foe.vy = Math.min(foe.vy, 0);
         }
@@ -3783,6 +4655,22 @@ function updateDomain(){
       // 真赝相爱：不锁人；每 5 秒自动填充一个储存术式
       if(d.t % AIAI_STOCK === 0) addStock(p, 1);
       if(d.t%30===0) spawnParticles(rand(240, WORLD_W-240), GROUND-rand(10,150), 2, '#a8d8ff', 2, 14, 3, 0.05);
+    } else if(d.kind==='nao'){
+      // 时轮金刚：施术者以极致速度穿梭（速度加成在移动处），撞到敌人就造成伤害
+      if(d.hitCd>0) d.hitCd--;
+      if(d.t%2===0 && p.hp>0) ghosts.push({ x:p.x, y:p.y, w:p.w, h:p.h, facing:p.facing, char:p.char, life:16, max:16 });
+      if(!d.finale && foe.hp>0 && d.hitCd<=0 && Math.abs(foe.x-p.x)<58 && Math.abs(foe.y-p.y)<110){
+        d.hitCd = 26;
+        damage(p, foe, 12, Math.sign(foe.x-p.x || p.facing)*10, 6, 24, 'nao');
+        ring(foe.x, foe.y-foe.h*0.5, '#a8d878', 120, 4);
+        shake = Math.max(shake, 8);
+        spawnParticles(foe.x, foe.y-foe.h*0.5, 10, '#a8d878', 5, 22, 4);
+      }
+      if(!d.finale && d.t>=NAO_RUSH-70){        // 狂奔之后：打出一记重拳收尾
+        d.finale = true;
+        castNaoFist(p);
+        d.t = NAO_RUSH-70;                      // 拳头演出期间领域保持，打完自动收束
+      }
     } else if(foe.hp>0){
       foe.stun = Math.max(foe.stun, 24);         // 持续固定（不再掉血）
       foe.vx *= 0.8;
@@ -4188,12 +5076,12 @@ function drawClash(t){
 
 function drawDomain(t){
   const d = domain, p = players[d.owner], foe = players[1-d.owner];
-  const shrine = d.kind==='shrine', nameless = d.kind==='nameless', aiai = d.kind==='aiai';
-  const glyphs = nameless? NAMELESS_GLYPHS : (aiai? AIAI_GLYPHS : (shrine? SHRINE_GLYPHS : VOID_GLYPHS));
-  const c1 = nameless? '#ff7a5a' : (aiai? '#7fd0ff' : (shrine? '#ff5060' : '#c9a24a'));
-  const c2 = nameless? '#8a2018' : (aiai? '#1f4a6a' : (shrine? '#8a2030' : '#8a6a2a'));
-  const name = nameless? '无 名 领 域' : (aiai? '真 赝 相 爱' : (shrine? '伏 魔 御 廚 子' : '無 量 空 処'));
-  const nCol = nameless? '#ffb08a' : (aiai? '#a8d8ff' : (shrine? '#ff8090' : '#9fd8ff'));
+  const shrine = d.kind==='shrine', nameless = d.kind==='nameless', aiai = d.kind==='aiai', nao = d.kind==='nao';
+  const glyphs = nao? NAO_GLYPHS : nameless? NAMELESS_GLYPHS : (aiai? AIAI_GLYPHS : (shrine? SHRINE_GLYPHS : VOID_GLYPHS));
+  const c1 = nao? '#a8d878' : nameless? '#ff7a5a' : (aiai? '#7fd0ff' : (shrine? '#ff5060' : '#c9a24a'));
+  const c2 = nao? '#3a5a2a' : nameless? '#8a2018' : (aiai? '#1f4a6a' : (shrine? '#8a2030' : '#8a6a2a'));
+  const name = nao? '時 輪 金 剛' : nameless? '无 名 领 域' : (aiai? '真 赝 相 爱' : (shrine? '伏 魔 御 廚 子' : '無 量 空 処'));
+  const nCol = nao? '#c8e8a0' : nameless? '#ffb08a' : (aiai? '#a8d8ff' : (shrine? '#ff8090' : '#9fd8ff'));
   // 与主画面一致的镜头变换（缩放 + 摄像机），保证领域内元素跟人对齐
   const worldXform = fn => {
     ctx.save();
@@ -4243,6 +5131,7 @@ function drawDomain(t){
       ctx.beginPath(); ctx.arc(cx,cy,R,0,7); ctx.clip();
       if(shrine) shrineBackdrop(cx,cy,Math.max(R*0.5,60), t);
       else if(aiai) aiAiBackdrop(cx,cy,Math.max(R*0.5,60), t);
+      else if(nao) naoBackdrop(cx,cy,Math.max(R*0.5,60), t);
       else if(!nameless){ voidBackdrop(cx,cy,Math.max(R*0.5,60), t); drawHole(cx, cy, 26+64*k, t); }   // 无名领域不改背景
       ctx.restore();
       const eCol = shrine? 'rgba(255,140,150,0.9)' : (nameless? 'rgba(255,150,110,0.9)' : (aiai? 'rgba(168,216,255,0.9)' : 'rgba(190,225,255,0.9)'));
@@ -4262,6 +5151,8 @@ function drawDomain(t){
       shrineBackdrop(W/2, H*0.42, H*0.55, t);
     } else if(aiai){
       aiAiBackdrop(W/2, H*0.42, H*0.55, t);
+    } else if(nao){
+      naoBackdrop(W/2, H*0.42, H*0.55, t);
     } else if(!nameless){
       voidBackdrop(W/2, H*0.44, H*0.42, t);
       drawHole(W/2, H*0.42, H*0.135, t);
@@ -4271,7 +5162,7 @@ function drawDomain(t){
       drawChar(players[0], t); drawChar(players[1], t);
       drawBeams(t, false);                                     // 领域背景之上重画光束（纯爱大炮等）
       drawSlashes(t); drawFireZones(t); drawDmgNums();
-      if(!shrine && !nameless && !aiai) drawTrapped(foe, t);   // 真赝相爱不锁人、无束缚特效
+      if(!shrine && !nameless && !aiai && !nao) drawTrapped(foe, t);   // 真赝相爱/时轮金刚不锁人、无束缚特效
     });
     const tt = d.t + DOMAIN_BURST;
     if(d.phase===2 && tt<110) domainText(name, Math.min(1,tt/10)*(tt>90? (110-tt)/20 : 1), nCol);
@@ -4280,7 +5171,7 @@ function drawDomain(t){
 }
 
 /* ================= 角色选择 ================= */
-const CARD = { x0:64, gap:16, w:272, h:380, y:140 };   // 四张角色卡等分居中
+const CARD = { x0:72, gap:14, w:216, h:380, y:140 };   // 五张角色卡等分居中
 function beginSelect(mode){
   lbResetRun();                // 开始新的一场：通关计时清零
   nameEl.classList.add('hide');
@@ -4474,8 +5365,10 @@ function drawTitle(t){
   ctx.fillText('移动 · 跳（空中再按＝二段跳，长按跳更高） · 防御 · 拳（连按＝三连段） · 术式 Q/E/F · 领域 G · 退出 ESC', W/2, 528);
   ctx.font='bold 15px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#9fd8ff';
   ctx.fillText('★ 宿傩：解 Q/1 · 捌 E/2 · 灶·开 F/3 · 伏魔御厨子 R/5', W/2, 548);
+  ctx.font='bold 15px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#a8d878';
+  ctx.fillText('★ 直哉：跑得越远攻击越痛（上方字幕） · 投射 Q 记录 5 秒行动后可重现 · 投射 E 钉住不守令者', W/2, 570);
   ctx.font='bold 14px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#ff2b55';
-  ctx.fillText('★ 黑闪：每次普攻都有 5% 概率骤现黑闪（无保底）— 威力为该拳的 2.5 次方，并回复少量体力', W/2, 570);
+  ctx.fillText('★ 黑闪：每次普攻都有 5% 概率骤现黑闪（无保底）— 威力为该拳的 2.5 次方，并回复少量体力', W/2, 592);
   // 模式选择
   const pulse = 0.5+0.5*Math.sin(t*0.004);
   const modes = [
@@ -4547,10 +5440,9 @@ function lbImport(){
     let n = 0;
     for(const ch in data){
       if(!CHARS[ch] || !Array.isArray(data[ch])) continue;
-      const list = data[ch].filter(e=> e && typeof e.t === 'number')
-                           .map(e=>({ n:String(e.n||'无名').slice(0,8), t:+e.t, d:+e.d|0 }))
-                           .sort((a,b)=> a.t-b.t);
-      lbSave(ch, list); n += list.length;
+      const list = lbNorm(data[ch].filter(e=> e && typeof e.t === 'number')
+                           .map(e=>({ n:String(e.n||'无名').slice(0,8), t:+e.t, d:+e.d|0 })));
+        lbSave(ch, list); n += list.length;
     }
     if(!n){ lbTipShow('存档码里没有可用成绩', '#ff8090'); return; }
     lbTipShow('导入成功：' + n + ' 条成绩', '#7fe0c0');
@@ -4570,15 +5462,17 @@ function drawLB(t){
   ctx.font = 'bold 38px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#eaf2ff';
   ctx.fillText('通 关 排 行 榜', W/2, 76);
   ctx.font = '14px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#8f9bc0';
-  ctx.fillText('只记录「疯狂 / 地狱」难度、单人打赢人机的通关用时　·　每个角色各取前 10', W/2, 108);
-  const cw = 292, gap = 12, x0 = (W-(cw*4+gap*3))/2, yTop = 140;
+  ctx.fillText('记录所有人的成绩：只记「疯狂 / 地狱」难度、单人打赢人机的通关用时　·　每个角色各取前 10', W/2, 100);
+  ctx.fillStyle = '#5f6b90';
+  ctx.fillText('同一个人同一角色只占一行 —— 取最高难度下的最快纪录（不同人各占一行）', W/2, 120);
+  const cw = 232, gap = 10, x0 = (W-(cw*5+gap*4))/2, yTop = 140;
   CHAR_LIST.forEach((ch, ci)=>{
     const CH = CHARS[ch], x = x0 + ci*(cw+gap), list = lbGet(ch);
     rr(x, yTop, cw, 396, 12);
     ctx.fillStyle = CH.hud; ctx.globalAlpha = 0.07; ctx.fill(); ctx.globalAlpha = 1;
     ctx.strokeStyle = CH.hud; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.5; ctx.stroke(); ctx.globalAlpha = 1;
     ctx.textAlign = 'center';
-    ctx.font = 'bold 19px "Microsoft YaHei", sans-serif'; ctx.fillStyle = CH.hud;
+    ctx.font = 'bold 16px "Microsoft YaHei", sans-serif'; ctx.fillStyle = CH.hud;
     ctx.fillText(CH.name, x+cw/2, yTop+30);
     ctx.font = '11px "Microsoft YaHei", sans-serif'; ctx.fillStyle = '#7c88ac';
     ctx.fillText('用时越短越好', x+cw/2, yTop+48);
@@ -4587,19 +5481,19 @@ function drawLB(t){
       const mine = !!(lbBoard && lbBoard.ch===ch && e && Math.abs(e.t-lbBoard.t)<0.005);
       if(mine){ ctx.fillStyle='rgba(255,210,74,0.18)'; rr(x+8, y-17, cw-16, 28, 6); ctx.fill(); }
       ctx.textAlign = 'left';
-      ctx.font = 'bold 14px Consolas, monospace'; ctx.fillStyle = i<3? '#ffd24a' : '#6f7ba0';
-      ctx.fillText(String(i+1).padStart(2,'0'), x+18, y);
-      ctx.font = '15px "Microsoft YaHei", sans-serif';
+      ctx.font = 'bold 12px Consolas, monospace'; ctx.fillStyle = i<3? '#ffd24a' : '#6f7ba0';
+      ctx.fillText(String(i+1).padStart(2,'0'), x+14, y);
+      ctx.font = '13px "Microsoft YaHei", sans-serif';
       ctx.fillStyle = e? (mine? '#fff2b0' : '#c3cde8') : '#39415c';
-      ctx.fillText(e? e.n : '—', x+50, y);
+      ctx.fillText(e? e.n : '—', x+40, y);
       ctx.textAlign = 'right';
-      ctx.font = 'bold 15px Consolas, monospace';
+      ctx.font = 'bold 13px Consolas, monospace';
       ctx.fillStyle = e? (mine? '#ffd24a' : '#aab6d8') : '#39415c';
-      ctx.fillText(e? fmtT(e.t) : '—', x+cw-18, y);
+      ctx.fillText(e? fmtT(e.t) : '—', x+cw-14, y);
       if(e){
         ctx.font = 'bold 10px "Microsoft YaHei", sans-serif';
         ctx.fillStyle = e.d>=3? '#ff5060' : '#ff9040';
-        ctx.fillText(e.d>=3? '地狱' : '疯狂', x+cw-18, y+13);
+        ctx.fillText(e.d>=3? '地狱' : '疯狂', x+cw-14, y+13);
       }
     }
   });
@@ -5190,7 +6084,7 @@ function goTitle(){
   selState = null;
   players = [makePlayer(0), makePlayer(1)];
   orbs = []; particles = []; beams = []; fusions = []; announcements = []; ghosts = [];
-  dmgNums = []; darkPillars = [];
+  dmgNums = []; darkPillars = []; danmaku.length = 0;
   shake = 0; slowmo = 1; flash = 0; camX = 0; zoom = 1; hitStop = 0; domain = null;
   aiReset();
   // 清掉残留输入（含虚拟按键），否则回标题瞬间就会被「任意键」直接开局
@@ -5259,11 +6153,12 @@ const JOY_KEYS = [
 const joys = [];
 function joyDraw(j){
   const g = j.g, R = j.R, c = R, dpr = 1;
+  const held = j.id !== null;              // 手指按着时稍微显形，松开几乎全透明，不挡角色
   g.clearRect(0, 0, R*2, R*2);
-  /* 底盘 */
+  /* 底盘：只留一圈极淡的轮廓 */
   g.beginPath(); g.arc(c, c, R-8, 0, 7);
-  g.fillStyle = 'rgba(18,28,56,0.40)'; g.fill();
-  g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,0.20)'; g.stroke();
+  g.fillStyle = held? 'rgba(18,28,56,0.13)' : 'rgba(18,28,56,0.05)'; g.fill();
+  g.lineWidth = 2; g.strokeStyle = held? 'rgba(255,255,255,0.26)' : 'rgba(255,255,255,0.13)'; g.stroke();
   /* 四个方向的标记：激活时高亮 */
   const marks = [['跳',0,-1,'up'], ['防',0,1,'down'], ['←',-1,0,'left'], ['→',1,0,'right']];
   g.textAlign = 'center'; g.font = 'bold 22px "Microsoft YaHei", sans-serif';
@@ -5271,23 +6166,23 @@ function joyDraw(j){
     const on = j.st[k], px = c + mx*(R-36), py = c + my*(R-36);
     if(on){
       g.beginPath(); g.arc(px, py, 23, 0, 7);
-      g.fillStyle = k==='up'? 'rgba(120,170,255,0.32)' : 'rgba(255,210,74,0.22)'; g.fill();
+      g.fillStyle = k==='up'? 'rgba(120,170,255,0.30)' : 'rgba(255,210,74,0.20)'; g.fill();
       g.lineWidth = 3; g.strokeStyle = k==='up'? 'rgba(150,200,255,0.9)' : 'rgba(255,210,74,0.8)'; g.stroke();
     }
-    g.fillStyle = on? '#ffffff' : 'rgba(190,206,240,0.42)';
+    g.fillStyle = on? '#ffffff' : (held? 'rgba(200,215,245,0.60)' : 'rgba(200,215,245,0.34)');
     g.fillText(s, px, py + 8);
   }
-  /* 摇杆头 */
-  const kx = c + j.dx*0.5, ky = c + j.dy*0.5;
+  /* 摇杆头：整体半透明，能看见底下的角色 */
+  const kx = c + j.dx*0.5, ky = c + j.dy*0.5, a = held? 1 : 0.62;
   g.beginPath(); g.arc(kx, ky, 44, 0, 7);
   const grd = g.createRadialGradient(kx-12, ky-14, 4, kx, ky, 46);
-  grd.addColorStop(0,'rgba(215,232,255,0.95)');
-  grd.addColorStop(0.6,'rgba(90,130,215,0.80)');
-  grd.addColorStop(1,'rgba(45,70,140,0.72)');
+  grd.addColorStop(0,'rgba(215,232,255,'+(0.46*a)+')');
+  grd.addColorStop(0.6,'rgba(90,130,215,'+(0.34*a)+')');
+  grd.addColorStop(1,'rgba(45,70,140,'+(0.26*a)+')');
   g.fillStyle = grd; g.fill();
-  g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,0.62)'; g.stroke();
+  g.lineWidth = 2; g.strokeStyle = 'rgba(255,255,255,'+(0.42*a)+')'; g.stroke();
   /* 中心点 */
-  g.beginPath(); g.arc(kx, ky, 4, 0, 7); g.fillStyle = 'rgba(255,255,255,0.55)'; g.fill();
+  g.beginPath(); g.arc(kx, ky, 4, 0, 7); g.fillStyle = 'rgba(255,255,255,'+(0.5*a)+')'; g.fill();
 }
 function joyApply(j, want){                       // 只在方向变化时才下 / 抬键（跳＝边沿触发）
   for(const k of ['up','left','right','down']){
@@ -5564,6 +6459,9 @@ function loop(now){
   // 茈 的全屏释放演出
   drawHollowCutIn(t);
 
+  // 空间斩：斜切屏幕 + 上方倒计时预警
+  drawWorldSlash(t);
+
   // 领域展开 · 無量空処
   if(domain) drawDomain(t);
 
@@ -5578,6 +6476,7 @@ function loop(now){
   }
 
   if(state!=='select') drawHUD(t);
+  drawNaoUI(t);              // 直哉：被动字幕 / 咒言指令 / 重现选择 / 漫画定格
   if(state==='fight'||state==='ko') drawSkillBars();
   if(training && (state==='fight'||state==='ko')) drawTrainTip();
   if(state==='title' || state==='net'){
@@ -5589,6 +6488,7 @@ function loop(now){
   if(state==='select' && selState) drawSelect(t);
   if(state==='clash') drawClash(t);
   if(state==='ko') drawKO(t);
+  drawDanmaku();              // 彩蛋弹幕，压在最上层
 }
 requestAnimationFrame(loop);
 </script>

@@ -373,10 +373,10 @@ const DODGE_COST   = 6;   // 咒力消耗
 const GHOST_COL = { gojo:'#7fd0ff', sukuna:'#ff8090', yuji:'#ffb070', yuta:'#a8d8ff', naoya:'#a8d878' };
 
 /* 禅院直哉：投射咒法 / 咒言指令 / 时轮金刚 */
-const PROJ_CD   = 600;    // 投射咒法：冷却（记录 5 秒 → 回溯 → 重现一整轮）
+const PROJ_CD   = 480;    // 投射咒法：冷却（记录 3 秒 → 回溯 → 重现一整轮）
 const CMD_CD    = 330;    // 咒言指令：冷却
 const SLASH_CD  = 160;    // 居合斩：冷却
-const PROJ_FRAMES = 300;  // 投射：记录 5 秒（60fps × 5）的行动
+const PROJ_FRAMES = 180;  // 投射：记录 3 秒（60fps × 3）的行动
 const PROJ_REWIND = 60;   // 回溯：1 秒（60 帧）内倒回起点
 const PROJ_REPLAY = 60;   // 重现：在 1 秒（60 帧）内演完（＝压缩成 1/5 时间）
 const CMD_TIME    = 120;  // 咒言指令：2 秒内不遵守就定住
@@ -458,7 +458,7 @@ const CHARS = {
     id:'naoya', name:'禅 院 直 哉', sub:'投 射 咒 法', hud:'#a8c878', accent:'#7da84a',
     skills:[
       { cd:'proj',   cost:30,  cdMax:PROJ_CD,  label:'投', short:'投 射', col:'#a8d878', p1:'Q', p2:'1',
-        name:'投 射 咒 法', desc:'记录接下来 5 秒的行动（身后残影提示），时间回溯后选择是否重现：重现＝把这 5 秒压缩进 1 秒内极速重演，行动带残影' },
+        name:'投 射 咒 法', desc:'记录接下来 3 秒的行动（身后残影提示），时间回溯后选择是否重现：重现＝把这 3 秒压缩进 1 秒内极速重演，行动带残影' },
       { cd:'cmd',    cost:26,  cdMax:CMD_CD,   label:'令', short:'投 令', col:'#ffd24a', p1:'E', p2:'2',
         name:'投 射 指 令', desc:'投射触碰敌人，强令其立刻做出随机行动（普攻 / 放技能 / 朝指定方向移动）；2 秒内不遵守就被投射钉住' },
       { cd:'slash',  cost:18,  cdMax:SLASH_CD, label:'斩', short:'居 合', col:'#dce8ff', p1:'F', p2:'3',
@@ -544,13 +544,13 @@ function naoProjPhase(p){
   if(p.naoReplay)     return '重 現 中';
   return '';
 }
-/* 投射咒法：按 Q 开始记录 5 秒的行动（正常行动，身后残影提示），
+/* 投射咒法：按 Q 开始记录 3 秒的行动（正常行动，身后残影提示），
    记完自动时间回溯（位置倒带回记录起点），然后选择：F 重现 / R 取消。
    重现＝把这 5 秒压缩进 1 秒内极速重演（每帧产生残影），期间技能免费。 */
 function startNaoRecord(p){
   p.state = 'naoRec'; p.stateT = 0;
   p.naoRec = { frames:[], t:PROJ_FRAMES };
-  announce('投 射 咒 法 · 記 錄', 70, '#a8d878', '接下来 5 秒的行动会被记录 —— 尽情跑位出招');
+  announce('投 射 咒 法 · 記 錄', 70, '#a8d878', '接下来 3 秒的行动会被记录 —— 尽情跑位出招');
 }
 function updateNaoRecord(p, K){                       // 每帧采集输入与位置（正常行动不受影响）
   const R = p.naoRec;
@@ -1940,14 +1940,17 @@ function updatePlayer(p, foe, k){
   /* 投射咒法：记录 / 回溯 / 选择 / 重现 期间 —— 对手被定格在画面里，直到投射结束 */
   if(p.char==='naoya'){
     const foeP = players[1-p.id];
-    if(naoProjActive(p) && foeP.hp>0 && !naoProjActive(foeP)) foeP.frozen = Math.max(foeP.frozen, 2);   // 每帧续命，投射一停就解冻
+    /* 记录 / 回溯 / 选择：对手被定格在画面里；但重演一开始他就解冻（1 秒的重演里双方是公平竞争） */
+    if(naoProjActive(p) && !p.naoReplay && foeP.hp>0 && !naoProjActive(foeP)) foeP.frozen = Math.max(foeP.frozen, 2);
   }
   /* 投射咒法·记录：正常行动的同时每帧采集输入（记满即停） */
   if(p.naoRec && !p.naoRec.done) updateNaoRecord(p, K);
   /* 咒言指令：倒计时 + 是否遵守 */
   if(p.naoCmd && state==='fight') checkNaoCmd(p);
-  if(p.frozen>0 && p.state!=='naoPin') p.state = p.state;   // 定住期间姿势僵直（state 交给 frozen 分支）
-  if(p.frozen>0) p.state='frozen';
+  /* 定住期间姿势僵直（state 交给 frozen 分支）；但宿傩的空间斩演出不能被打断 ——
+     否则它会被冻在 wsCharge 上再也不推进＝一直锁血 */
+  const wsBusy = p.state==='wsCharge' || p.state==='wsSlash' || p.state==='wsOpen' || p.state==='wsBreak';
+  if(p.frozen>0 && !wsBusy) p.state='frozen';
   if(p.frozen<=0 && p.state==='frozen') p.state='idle';
   p.blocking = K.down && p.onGround &&
     p.state!=='hollowCharge' && p.state!=='hollowFire' &&
@@ -2338,7 +2341,10 @@ function updatePlayer(p, foe, k){
       consume(k.s3[0], k.s3[1]); consume(k.s4[0], k.s4[1]);
       p.naoReplay = { frames:p.naoRec.frames, idx:0 };
       p.naoRec = null; p.state='idle'; p.stateT=0;
-      announce('投 射 · 重 現 !', 60, '#a8d878', '1 秒内极速重演记录的行动');
+      // 重演一开始对手就解冻：这 1 秒里他能动，能闪能防能反打
+      const foeFree = players[1-p.id];
+      if(foeFree){ foeFree.frozen = 0; if(foeFree.state==='frozen'){ foeFree.state='idle'; foeFree.stateT=0; } }
+      announce('投 射 · 重 現 !', 60, '#a8d878', '1 秒内极速重演 · 对手可以行动');
       shake = Math.max(shake, 6);
     }
   }
@@ -2880,7 +2886,7 @@ function drawNaoya(p, t){
     const k = p.naoRec.frames.length/PROJ_FRAMES;
     ctx.font='bold 12px "Microsoft YaHei", sans-serif'; ctx.textAlign='center';
     ctx.fillStyle='#a8d878';
-    ctx.fillText('録 ' + (p.naoRec.frames.length/60).toFixed(1) + 's / 5.0s', x, headY-34);
+    ctx.fillText('録 ' + (p.naoRec.frames.length/60).toFixed(1) + 's / 3.0s', x, headY-34);
     ctx.fillStyle='rgba(8,12,28,0.7)'; ctx.fillRect(x-26, headY-30, 52, 6);
     ctx.fillStyle='#a8d878'; ctx.fillRect(x-26, headY-30, 52*k, 6);
   }
@@ -4191,7 +4197,7 @@ function drawNaoFreeze(proj, foe, t){
   ctx.fillStyle = Math.sin(t/14)>0? '#ffffff' : '#a8d878';
   ctx.fillText(s, W/2, bar + 42);
   let ph = naoProjPhase(proj);
-  if(proj.naoRec) ph += '　' + (proj.naoRec.frames.length/60).toFixed(1) + 's / 5.0s';
+  if(proj.naoRec) ph += '　' + (proj.naoRec.frames.length/60).toFixed(1) + 's / 3.0s';
   ctx.font = 'bold 15px "Microsoft YaHei", sans-serif';
   ctx.strokeStyle = 'rgba(6,8,20,0.85)'; ctx.lineWidth = 3.5;
   ctx.strokeText(ph, W/2, bar + 64);
@@ -4219,8 +4225,9 @@ function drawNaoFreeze(proj, foe, t){
 function drawNaoUI(t){
   if(state!=='fight' && state!=='ko') return;
   ctx.textAlign='center';
-  /* 投射咒法生效中：对手视角 —— 上方字幕「投 射 咒 法」+ 画面定格演出 */
-  const proj = players.find(p=> p.char==='naoya' && naoProjActive(p));
+  /* 投射咒法生效中（记录 / 回溯 / 选择）：对手视角 —— 上方字幕 + 画面定格演出
+     重演阶段对手已解冻，不再压灰整个画面 */
+  const proj = players.find(p=> p.char==='naoya' && naoProjActive(p) && !p.naoReplay);
   const frozenFoe = proj? players[1-proj.id] : null;
   if(proj) drawNaoFreeze(proj, frozenFoe, t); else naoFreezeT = 0;
   /* 被动字幕：屏幕上方 —— 移动蓄力倍率（投射时下移，给上方字幕让位） */
@@ -5455,7 +5462,7 @@ function drawTitle(t){
   ctx.font='bold 15px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#9fd8ff';
   ctx.fillText('★ 宿傩：解 Q/1 · 捌 E/2 · 灶·开 F/3 · 伏魔御厨子 R/5', W/2, 548);
   ctx.font='bold 15px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#a8d878';
-  ctx.fillText('★ 直哉：跑得越远攻击越痛（上方字幕）· 投射 Q 记录 5 秒 / 投射 E 钉住 · 蓄满后普攻＝突进一拳（黑闪 20%）', W/2, 570);
+  ctx.fillText('★ 直哉：跑得越远攻击越痛（上方字幕）· 投射 Q 记录 3 秒 / 投射 E 钉住 · 蓄满后普攻＝突进一拳（黑闪 20%）', W/2, 570);
   ctx.font='bold 14px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#ff2b55';
   ctx.fillText('★ 黑闪：每次普攻都有 5% 概率骤现黑闪（无保底）— 威力为该拳的 2.5 次方，并回复少量体力', W/2, 592);
   // 模式选择

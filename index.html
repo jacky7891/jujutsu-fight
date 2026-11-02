@@ -301,6 +301,7 @@ let shake = 0, hitStop = 0, flash = 0, timeAcc = 0, zoom = 1;
 let particles = [], orbs = [], beams = [], fusions = [], announcements = [], ghosts = [];
 let danmaku = [];                 // 彩蛋弹幕（被空间斩斩死时刷屏）
 let slowmo = 1, camX = 0;
+let shatter = null;                // 天逆鉾：整屏碎裂演出
 const WORLD_W = 1600;
 
 /* 演出时间（帧 = 1/60 秒） */
@@ -370,7 +371,7 @@ const DODGE_LEN    = 18;  // 整个动作时长（后段为滑步收势）
 const DODGE_IFRAME = 15;  // 无敌帧（覆盖整个突进）
 const DODGE_CD     = 56;  // 冷却（更短：躲完能很快再躲）
 const DODGE_COST   = 6;   // 咒力消耗
-const GHOST_COL = { gojo:'#7fd0ff', sukuna:'#ff8090', yuji:'#ffb070', yuta:'#a8d8ff', naoya:'#a8d878' };
+const GHOST_COL = { gojo:'#7fd0ff', sukuna:'#ff8090', yuji:'#ffb070', yuta:'#a8d8ff', naoya:'#a8d878', toji:'#dcceae' };
 
 /* 禅院直哉：投射咒法 / 咒言指令 / 时轮金刚 */
 const PROJ_CD   = 480;    // 投射咒法：冷却（记录 3 秒 → 回溯 → 重现一整轮）
@@ -402,6 +403,16 @@ const SEAL_TIME   = 300;  // 雅各布天梯：封禁术式 5 秒
 const AIAI_STOCK  = 300;  // 领域内每 5 秒自动填充一个储存术式
 const AIAI_GLYPHS = ['真','贋','相','愛','里','香','呪','言','宇','守','羅','梯'];
 
+/* ================= 伏黑甚尔（天与咒缚 · 无咒力） ================= */
+const TOJI_HP_MUL   = 1.25;   // 血量比常人多
+const TOJI_SPD_MUL  = 1.18;   // 移速更快
+const TOJI_ATK_MUL  = 1.7;    // 普攻伤害很高（纯体术）
+const TOJI_SOUL_DMG = 34;     // 释魂刀：斩在灵魂上的一刀
+const TOJI_SOUL_LIFE= 0.7;    // 吸血比例
+const TOJI_SOUL_CD  = 150;
+const TOJI_INV_CD   = 480;   // 天逆鉾：8 秒冷却
+const TOJI_LOCK     = 240;    // 天逆鉾：禁锢 4 秒
+
 /* ================= 角色 ================= */
 const CHARS = {
   gojo: {
@@ -423,9 +434,9 @@ const CHARS = {
       { cd:'cleave', cost:10, cdMax:CLEAVE_CD, label:'解', short:'解', col:'#cfd6e6', p1:'Q', p2:'1',
         name:'解（蓄力，可走位）', desc:'按住蓄力·松手：黑线以敌人为中心贯穿全场炸开：0.17秒2道/0.37秒4道/满蓄7道' },
       { cd:'grab',   cost:20, cdMax:GRAB_CD,   label:'捌', short:'捌', col:'#ff8090', p1:'E', p2:'2',
-        name:'捌 · 擒 拿', desc:'踏步擒住敌人提在手上；无敌，期间不停细斩吸血，最后一刀无视无敌' },
+        name:'捌 · 定 格 斬', desc:'踏步触碰敌人将其定格，随后在其身上爆发多段斩击 —— 造成对方当前血量 10% 的伤害' },
       { cd:'flame',  cost:45, cdMax:FLAME_CD,  label:'灶', short:'灶 开', col:'#ff9040', p1:'F', p2:'3',
-        name:'灶 · 开（蓄力）', desc:'蓄力射出贯穿全场的巨大火焰箭，落处燃成一片火海' },
+        name:'灶 · 开（蓄力）', desc:'蓄力射出贯穿全场的巨大火焰箭；命中敌人则火焰附在其身上，持续灼烧掉血' },
       { cd:'shrine', cost:100,cdMax:900, label:'厨', short:'伏 魔', col:'#ff5060', p1:'R', p2:'5',
         name:'伏魔御厨子', desc:'展开领域，自动不断斩下漫天「解」，不占用自身冷却' },
     ],
@@ -469,8 +480,17 @@ const CHARS = {
         name:'時 輪 金 剛', desc:'把速度提升到极致，在场内极速穿梭，撞到敌人就造成伤害；狂奔之后自动打出一记重拳' },
     ],
   },
+  toji: {
+    id:'toji', name:'伏 黑 甚 尔', sub:'天 与 咒 缚 · 无 咒 力', hud:'#dcceae', accent:'#9aa4b8',
+    skills:[
+      { cd:'soul', cost:0, cdMax:TOJI_SOUL_CD, label:'魂', short:'释 魂 刀', col:'#e2e9f6', p1:'Q', p2:'1',
+        name:'释 魂 刀', desc:'突进把刀送进敌人身体：无视防御、直接斩在灵魂上，并把伤害的一部分吸回自己' },
+      { cd:'inv',  cost:0, cdMax:TOJI_INV_CD, label:'鉾', short:'天 逆 鉾', col:'#c8ccd8', p1:'R', p2:'4',
+        name:'天 逆 鉾', desc:'封住敌人动作 4 秒；若对方正开着领域，一矛把领域从中戳碎（整屏碎裂）' },
+    ],
+  },
 };
-const CHAR_LIST = ['gojo', 'sukuna', 'yuji', 'yuta', 'naoya'];
+const CHAR_LIST = ['gojo', 'sukuna', 'yuji', 'yuta', 'naoya', 'toji'];
 let picks = ['gojo', 'sukuna'];        // 双方所选角色
 let selState = null;                   // 角色选择界面状态
 
@@ -496,6 +516,10 @@ const SKILLKEYS = {
     0: [['KeyQ',null],['KeyE',null],['KeyF',null],['KeyR',null]],
     1: [['Numpad1','Digit1'],['Numpad2','Digit2'],['Numpad3','Digit3'],['Numpad4','Digit4']],
   },
+  toji: {                                                  // 甚尔只有两个技能：释魂刀 / 天逆鉾
+    0: [['KeyQ',null],[null,null],[null,null],['KeyR',null]],
+    1: [['Numpad1','Digit1'],[null,null],[null,null],['Numpad4','Digit4']],
+  },
 };
 // 人机的虚拟按键（每个角色各不相同，走同一套 updatePlayer）
 const AI_SKILLKEYS = {
@@ -504,8 +528,9 @@ const AI_SKILLKEYS = {
   yuji:   [['AIDP'],['AIBL'],['AIYC'],['AIYG']],
   yuta:   [['AITH'],['AIKS'],['AIMC'],['AIYY']],
   naoya:  [['AIN1'],['AIN2'],['AIN3'],['AIN4']],
+  toji:   [['AITJ1'],[null],[null],['AITJ4']],
 };
-const ALL_AI_CODES = ['AIL','AIR','AIU','AID','AIP','AIB','AIRD','AIH','AIDM','AISL','AIGR','AIFL','AISH','AIDP','AIBL','AIYC','AIYG','AITH','AIKS','AIMC','AIYY','AIDG','AIN1','AIN2','AIN3','AIN4'];
+const ALL_AI_CODES = ['AIL','AIR','AIU','AID','AIP','AIB','AIRD','AIH','AIDM','AISL','AIGR','AIFL','AISH','AIDP','AIBL','AIYC','AIYG','AITH','AIKS','AIMC','AIYY','AIDG','AIN1','AIN2','AIN3','AIN4','AITJ1','AITJ4'];
 function aiKeyMap(char){
   const sk = AI_SKILLKEYS[char] || AI_SKILLKEYS.gojo;
   return { left:'AIL', right:'AIR', up:'AIU', down:'AID', punch:'AIP', punch2:null,
@@ -635,9 +660,12 @@ function castNaoFist(p){
 }
 function makePlayer(id, char){
   const ch = char || picks[id] || 'gojo';
+  const hpMax = Math.round(MAX_HP * (ch==='toji'? TOJI_HP_MUL : 1));   // 甚尔：血量更厚
   return {
     id, char:ch, x: id===0? 400:1200, y: GROUND, vx:0, vy:0, facing: id===0?1:-1,
-    hp:MAX_HP, maxHp:MAX_HP, energy:35, maxEnergy:100,
+    hp:hpMax, maxHp:hpMax, energy:35, maxEnergy:100,
+    spd: ch==='toji'? TOJI_SPD_MUL : 1,          // 移速倍率（甚尔更快）
+    atkMul: ch==='toji'? TOJI_ATK_MUL : 1,       // 普攻伤害倍率（甚尔更痛）
     w:56, h:120,
     onGround:true, state:'idle', stateT:0,
     atkHit:false, atkStep:0, redHold:0, charge:0, power:0, comboBuf:0,
@@ -646,7 +674,7 @@ function makePlayer(id, char){
     coyote:0, jumpBuf:0, jumps:1, landSquash:0,
     cd:{blue:0, red:0, domain:0, cleave:0, grab:0, flame:0, shrine:0, fuse:0,
         dash:0, blood:0, ycut:0, thrust:0, kesa:0, mimic:0, dodge:0,
-        proj:0, cmd:0, slash:0},
+        proj:0, cmd:0, slash:0, soul:0, inv:0},
     stock:0,          // 里香储存的术式（突刺命中 / 领域自动填充）
     mimicIdx:0,       // 术式模仿：当前轮到的术式（咒言 → 宇守罗弹 → 雅各布天梯）
     cannonHits:0,     // 纯爱大炮：已命中段数
@@ -660,6 +688,8 @@ function makePlayer(id, char){
     naoGate:0,        // 刚按 R 放弃重现：这几帧屏蔽术式输入，防止误开领域
     frozen:0,         // 被钉住：完全不能动（投射定格 / 咒言钉住）
     frozenBy:null,    // 'proj' = 被投射定格　'pin' = 被咒言钉住
+    burn:0,           // 身上着火（灶·开命中附带的灼烧）：剩余帧数
+    burnSrc:null,     // 点火的人
     hitFlash:0, wins:0,
     grabbedBy:null, grabTarget:null, kmap: keyMap(id, ch), aiKeys: aiKeyMap(ch),
   };
@@ -672,7 +702,7 @@ function resetRound(){
   players[0].wins = w0; players[1].wins = w1;
   orbs = []; particles = []; beams = []; fusions = []; announcements = []; ghosts = [];
   slashes = []; fireZones = []; dmgNums = []; clash = null; darkPillars = []; wsFx = null;
-  danmaku.length = 0; naoPinFx = null; execFx = null;
+  danmaku.length = 0; naoPinFx = null; execFx = null; shatter = null;
   shake = 0; slowmo = 1; flash = 0; camX = 0; zoom = 1; domain = null;
   bfFx = 0; bfStop = 0; bfSlow = 0;
   aiReset(); syncPadKeys();
@@ -791,9 +821,10 @@ function damage(att, def, dmg, kb, kbY, stun, type){
               type==='blue'? '#5aa0ff' : type==='flame'? '#ff9040' :
               type==='cleave'? '#d8dee8' : type==='black'? '#ff2b55' :
               type==='blood'? '#e03a4a' : type==='rika'? '#7fd0ff' :
-              type==='ladder'? '#ffd24a' : type==='cannon'? '#c8a0ff' : '#ffffff';
-  // 防御减伤（领域展开无可抵挡）
-  if(type!=='domain' && def.blocking && att && ((def.facing===1 && att.x>def.x)||(def.facing===-1 && att.x<def.x))){
+              type==='ladder'? '#ffd24a' : type==='cannon'? '#c8a0ff' :
+              type==='soul'? '#e6f0ff' : '#ffffff';
+  // 防御减伤（领域展开无可抵挡；释魂刀斩的是灵魂，防御也没用）
+  if(type!=='domain' && type!=='soul' && def.blocking && att && ((def.facing===1 && att.x>def.x)||(def.facing===-1 && att.x<def.x))){
     if(att && att.char==='naoya'){ dmg *= naoMul(att); att.moveDist = 0; }
     if(def.char==='naoya') def.moveDist = 0;
     def.hp -= wsSurvive(def, dmg*0.18); def.vx += Math.sign(kb||1)*kb*0.3;
@@ -1352,6 +1383,20 @@ function trySkillsNaoya(p, k, K){
     } else { p.state='punch'; p.stateT=0; p.atkStep=1; p.atkHit=false; }
   }
 }
+/* ================= 伏黑甚尔：无咒力 · 纯体术 ================= */
+function trySkillsToji(p, k, K){
+  if(K.s1P){
+    consS(k,1);
+    if(p.cd.soul<=0){ p.cd.soul = TOJI_SOUL_CD; p.state='tojiSoul'; p.stateT=0; p.atkHit=false; }
+    else announce('释 魂 刀 尚 未 回 鞘', 30, '#d8c9a4');
+  }
+  else if(K.s4P){
+    consS(k,4);
+    if(p.cd.inv<=0){ p.cd.inv = TOJI_INV_CD; p.state='tojiInv'; p.stateT=0; }
+    else announce('天 逆 鉾 尚 未 回 手', 30, '#c8ccd8');
+  }
+  else if(K.punchP){ consume(k.punch, k.punch2); p.state='punch'; p.stateT=0; p.atkStep=1; p.atkHit=false; }
+}
 function trySkills(p, k, K){
   if(p.naoGate>0){                        // 刚按 R 放弃重现：吞掉残余按键，别让大招被 R 带出来
     p.naoGate--;
@@ -1359,7 +1404,8 @@ function trySkills(p, k, K){
     consume(k.punch, k.punch2); consume(k.up); consume(k.dodge, k.dodge2);
     return;
   }
-  if(p.char==='naoya') trySkillsNaoya(p, k, K);
+  if(p.char==='toji') trySkillsToji(p, k, K);
+  else if(p.char==='naoya') trySkillsNaoya(p, k, K);
   else if(p.char==='sukuna') trySkillsSukuna(p, k, K);
   else if(p.char==='yuji') trySkillsYuji(p, k, K);
   else if(p.char==='yuta') trySkillsYuta(p, k, K);
@@ -1502,7 +1548,7 @@ function updateWorldSlash(p, foe){
 }
 
 /* ================= 两面宿傩：解 / 捌 / 灶·开 / 伏魔御厨子 ================= */
-const GRAB_TIME = 84;    // 捌：擒住持续帧数（约 1.4 秒）
+const GRAB_TIME = 56;    // 捌：定格+爆发斩击的总帧数
 function trySkillsSukuna(p, k, K){
   const foe = players[1-p.id];
   if(K.s1P){
@@ -1578,12 +1624,13 @@ const DASH_DMG = 12;      // 冲拳的伤害
 /* 冲拳：向前暴起，把敌人击飞 */
 /* 通用闪避（全角色）：突进一段距离，途中无敌 */
 function tryDodge(p, K){
-  if(p.cd.dodge>0 || p.energy<DODGE_COST || p.state==='dodge') return false;
+  const free = p.char==='toji';                   // 甚尔：天与咒缚没有咒力，闪避靠纯体术（不耗咒力）
+  if(p.cd.dodge>0 || (!free && p.energy<DODGE_COST) || p.state==='dodge') return false;
   const dir = K.left? -1 : (K.right? 1 : p.facing);
   p.state='dodge'; p.stateT=0; p.dodgeDir=dir; p.facing=dir;
   p.invul = Math.max(p.invul, DODGE_IFRAME);      // 无敌帧覆盖整个突进
   p.cd.dodge = DODGE_CD;
-  p.energy = clamp(p.energy-DODGE_COST, 0, 100);
+  if(!free) p.energy = clamp(p.energy-DODGE_COST, 0, 100);
   p.blocking = false;
   if(!p.onGround) p.vy = 0;                       // 空中闪避＝水平冲刺
   ghosts.length = 0;                              // 上一次闪避的残影不留到这一次
@@ -1787,31 +1834,33 @@ function castCleave(p){
   ring(cx, cy, '#ffffff', 34+n*6, 3);
 }
 
-/* 捌：擒住后一边压制一边在对方身上落下细小斩击，少量吸血 */
-const GRAB_TICK = 8, SMALL_DMG = 0.8, SMALL_DRAIN = 0.5;
-function smallCleave(p, tgt){
-  const hx = tgt.x + rand(-16,16), hy = tgt.y - 34 + rand(-32,26);
-  slashes.push({ x:hx, y:hy, ang:rand(0,6.283), len:rand(52,96), owner:p.id,
-    dmg:0, delay:0, t:0, life:9, max:9, w:2.2, done:true, tiny:true });
-  // 细小斩击：无视无敌、必定命中，但**不触发顿帧**（否则擒拿过程会被无限拉长）
-  tgt.hp = clamp(tgt.hp - SMALL_DMG, 0, tgt.maxHp);
+/* 捌：触碰后定格对手，在其身上爆发多段斩击 —— 造成对方当前血量 10% 的伤害 */
+const REND_N = 8, REND_TICK = 5, REND_HOLD = 12;   // 斩击段数 / 间隔帧 / 定格帧
+function rendSlash(p, tgt, dmg){
+  const hx = tgt.x + rand(-20,20), hy = tgt.y - tgt.h*0.5 + rand(-34,30);
+  slashes.push({ x:hx, y:hy, ang:rand(0,6.283), len:rand(64,110), owner:p.id,
+    dmg:0, delay:0, t:0, life:10, max:10, w:3, done:true, tiny:true });
+  // 每段都是固定份额：总伤在触碰到的一瞬间就已锁定为当时血量的 10%
+  tgt.hp = clamp(tgt.hp - dmg, 0, tgt.maxHp);
   tgt.hitFlash = 6; tgt.stun = Math.max(tgt.stun, 2);
-  p.hp = clamp(p.hp + SMALL_DRAIN, 0, p.maxHp);   // 每道细斩只吸回一点点
-  p.energy = clamp(p.energy + 0.4, 0, 100);
-  spawnParticles(hx, hy, 3, '#ff8090', 2.5, 16, 3, 0.15);
+  spawnParticles(hx, hy, 4, '#ff5060', 3, 20, 3, 0.15);
+  shake = Math.max(shake, 3);
   if(tgt.hp<=0) ko(p, tgt);
 }
 
 function startGrab(p, foe){
   p.state = 'grabbing'; p.stateT = 0; p.vx = 0;
-  p.invul = Math.max(p.invul, GRAB_TIME+10);
+  p.invul = Math.max(p.invul, GRAB_TIME+12);
   p.energy = clamp(p.energy-20, 0, 100);
   p.cd.grab = GRAB_CD;
   p.grabTarget = foe;
-  announce('捌 · 擒 拿 !', GRAB_TIME, '#ff8090');
-  shake = Math.max(shake, 10); hitStop = 6;
-  ring(foe.x, foe.y-60, '#ff5060', 140, 6);
-  spawnParticles(foe.x, foe.y-70, 18, '#ff8090', 5, 26, 4);
+  p.rendTotal = Math.max(1, Math.round(foe.hp*0.10));   // 触碰瞬间锁定：残血 10%
+  p.rendLeft  = REND_N;
+  // 定格：全世界停一拍
+  announce('捌 · 定 格 !', GRAB_TIME, '#ff8090', '多段斩击将落下 —— 你当前血量的 10%');
+  hitStop = 10; slowmo = 0.5; bfSlow = REND_HOLD;   // 只定格那一拍慢动作，斩击爆发时已是常速
+  ring(foe.x, foe.y-60, '#ff5060', 150, 6);
+  spawnParticles(foe.x, foe.y-70, 16, '#ff8090', 5, 26, 4);
 }
 function finishGrab(p, foe){
   p.state = 'grabEnd'; p.stateT = 0;
@@ -1819,18 +1868,17 @@ function finishGrab(p, foe){
   if(foe){
     foe.grabbedBy = null;
     if(foe.hp>0){
-      foe.state='idle'; foe.stun = 34; foe.vy = -3;
-      const dmg = 14;
-      damage(p, foe, dmg, p.facing*7, 5, 34, 'cleave');   // 最后一刀无视无敌
-      p.hp = clamp(p.hp + 4, 0, p.maxHp);                 // 最终刀光：只回少量血
-      p.energy = clamp(p.energy + dmg*0.5, 0, 100);
-      announce('刀 光 · 吸 血 +4', 46, '#ff5060');
+      // 收尾：十字大斩（伤害已在多段里扣完，这两刀只是画面）
+      for(const a of [0.6, -0.9]) slashes.push({ x:foe.x, y:foe.y-foe.h*0.5, ang:a, len:150,
+        owner:p.id, dmg:0, delay:0, t:0, life:12, max:12, w:4, done:true });
+      foe.state='idle'; foe.stun = 34; foe.vy = -3; foe.vx = p.facing*4;
+      announce('捌 · 殘 血 斬 −' + p.rendTotal, 46, '#ff5060', '对方当前血量的 10%');
     }
   }
   shake = Math.max(shake, 18); flash = Math.max(flash, 0.6);
 }
 
-// 灶·开：贯穿全场的火焰箭 + 落处火海
+// 灶·开：贯穿全场的火焰箭；命中后火焰附在敌人身上持续灼烧
 function fireFlameArrow(p){
   const k = clamp(p.charge/55, 0, 1);
   p.energy = clamp(p.energy-45, 0, 100);
@@ -1844,11 +1892,14 @@ function fireFlameArrow(p){
   const foe = players[1-p.id];
   if(foe.hp>0 && Math.abs((foe.y-foe.h*0.5) - y) < h*1.2){
     damage(p, foe, 15 + k*9, p.facing*(10+k*6), 6, 40, 'flame');
+    // 命中：灼烧附在敌人身上（持续掉血），不再在地上留火海
+    foe.burn = Math.round(200 + k*90);
+    foe.burnSrc = p;
+    announce('灼 烧 !', 40, '#ff9040', '灶 · 开 的 火 附 在 身 上');
   }
-  // 落点：贯穿到视野尽头，燃成火海
+  // 箭头飞到视野尽头炸开的视觉（纯特效，无伤害区）
   const ix = clamp(p.x + p.facing*520, 90, WORLD_W-90);
-  const wHalf = 110 + k*90;
-  fireZones.push({x:ix-wHalf, w:wHalf*2, life: 200+k*90, max:200+k*90, owner:p.id, tick:0});
+  const wHalf = 70 + k*70;
   for(let i=0;i<26;i++){
     particles.push({x:ix+rand(-wHalf,wHalf), y:GROUND-rand(0,10), vx:rand(-1,1), vy:rand(-5,-1.5),
       life:rand(18,40), max:40, color: Math.random()<0.5?'#ff9040':'#ffd24a', size:rand(4,11), grav:-0.02});
@@ -1881,20 +1932,19 @@ function updateSlashes(){
 }
 
 function updateFireZones(){
-  for(let i=fireZones.length-1;i>=0;i--){
-    const z = fireZones[i];
-    z.life--; z.tick++;
-    if(z.tick%14===0){
-      const foe = players[1-z.owner];
-      if(foe.hp>0 && foe.x>z.x-20 && foe.x<z.x+z.w+20 && foe.y>GROUND-90){
-        damage(players[z.owner], foe, 2.4, 0, 0, 6, 'flame');
-      }
+  // 灶·开 的灼烧：附在敌人身上持续掉血（旧版地面火海已移除）
+  for(const pl of players){
+    if(pl.burn>0){
+      if(pl.hp<=0){ pl.burn = 0; pl.burnSrc = null; continue; }
+      pl.burn--;
+      const src = pl.burnSrc || players[1-pl.id];
+      if(pl.burn%14===0) damage(src, pl, 2.4, 0, 0, 6, 'flame');
+      // 身上窜起的火苗
+      if(Math.random()<0.85) particles.push({x:pl.x+rand(-13,13), y:pl.y-rand(4,pl.h*0.92),
+        vx:rand(-0.5,0.5), vy:rand(-3.2,-1.2), life:rand(10,22), max:22,
+        color: Math.random()<0.5? '#ff9040' : '#ffd24a', size:rand(2,6), grav:-0.03});
+      if(pl.burn===0) pl.burnSrc = null;
     }
-    if(Math.random()<0.75){
-      particles.push({x:rand(z.x, z.x+z.w), y:GROUND-rand(0,6), vx:rand(-0.6,0.6), vy:rand(-4.5,-1.5),
-        life:rand(14,32), max:32, color: Math.random()<0.5?'#ff9040':'#ffd24a', size:rand(3,9), grav:-0.03});
-    }
-    if(z.life<=0) fireZones.splice(i,1);
   }
 }
 
@@ -1937,6 +1987,7 @@ function updatePlayer(p, foe, k){
   for(const c in p.cd) if(p.cd[c]>0)
     p.cd[c] = Math.max(0, p.cd[c] - (cdhalf && c!=='domain'? 2 : 1));   // 领域自身 CD 不翻倍，否则能连开
   p.energy = clamp(p.energy + 0.22, 0, 100);
+  if(p.char==='toji') p.energy = 0;                         // 天与咒缚：天生没有咒力
 
   const locked = p.stun>0 || state!=='fight';
   if(locked){ for(const key in K) K[key]=false; if(p.naoReplay && p.stun>0){ p.naoReplay=null; p.naoRec=null; } }
@@ -2082,19 +2133,23 @@ function updatePlayer(p, foe, k){
       announce('捌 · 落 空', 30, '#8f9bc0');
     }
   }
-  /* ---------- 捌：擒住，任敌人挣扎也逃不掉 ---------- */
+  /* ---------- 捌：定格对手 → 爆发多段斩击 ---------- */
   else if(p.state==='grabbing'){
     const tgt = p.grabTarget || foe;
     p.vx *= 0.7;
     p.invul = Math.max(p.invul, 3);
     if(tgt.hp>0 && p.stateT<GRAB_TIME && state==='fight'){
+      // 对手被定格在原地：不能动、不受重力
       tgt.state = 'grabbed'; tgt.grabbedBy = p; tgt.stun = 3;
       tgt.vx = 0; tgt.vy = 0;
-      tgt.x = p.x + p.facing*36; tgt.y = p.y - 96;
       tgt.facing = -p.facing; tgt.blocking = false;
-      // 一边擒住，一边在对方身上不停落下细小斩击（吸血）
-      if(p.stateT % GRAB_TICK === 5) smallCleave(p, tgt);
-      // 挣扎特效
+      // 定格 REND_HOLD 帧后开始爆发：每 REND_TICK 帧一段，共 REND_N 段
+      const rt = p.stateT - REND_HOLD;
+      if(p.rendLeft>0 && rt>=0 && rt%REND_TICK===0){
+        rendSlash(p, tgt, p.rendTotal/REND_N);
+        p.rendLeft--;
+      }
+      // 定格中的挣扎碎光
       if(p.stateT%6===0) spawnParticles(tgt.x, tgt.y-40, 3, '#8f9bc0', 3, 16, 3, 0.1);
     } else finishGrab(p, tgt);
   }
@@ -2290,18 +2345,25 @@ function updatePlayer(p, foe, k){
   /* ---------- 拳击三连：刺拳 → 直拳 → 上勾拳 ---------- */
   else if(p.state==='punch'){
     const stp = p.atkStep;
-    const active = stp===1? 5 : (stp===2? 4 : 7);
-    const end    = stp===1? 15: (stp===2? 14: 21);
+    const tj  = p.char==='toji';                       // 甚尔：纯体术 —— 拳更快、冲更猛、收更短
+    const active = tj? (stp===1?4:(stp===2?3:6)) : (stp===1?5:(stp===2?4:7));
+    const end    = tj? (stp===1?12:(stp===2?11:18)) : (stp===1?15:(stp===2?14:21));
     // 出拳瞬间向前微冲，手感更实（也能更容易贴上去打第二拳）
-    if(p.stateT<=3) p.vx = p.facing*(stp===1?4.0:(stp===2?5.0:7.0));
+    if(p.stateT<=3) p.vx = p.facing*(tj? (stp===1?5.5:(stp===2?6.5:9.0)) : (stp===1?4.0:(stp===2?5.0:7.0)));
     else p.vx *= 0.84;
+    // 甚尔出拳：脚下带尘，出第三段（重拳）时扬起明显尘环
+    if(tj && p.stateT===1){
+      spawnParticles(p.x - p.facing*16, p.y-4, stp===3? 8:3, '#8b8f9c', 3, 16, 3, 0.15);
+      if(stp===3) ring(p.x, p.y-4, '#a9b0be', 64, 2);
+    }
 
     if(p.stateT===active && !p.atkHit){
       const ay = p.y - p.h*0.55;
       const rx = stp===3? 68 : 62, ry = stp===3? 90 : 72;
       // 拳风以自身为中心，左右两侧都能打到（转身也不怕）
       if(foe.hp>0 && foe.invul<=0 && Math.abs(foe.x-p.x)<rx+26 && Math.abs((foe.y-foe.h*0.5)-ay)<ry){
-        const d  = stp===1? 5 : (stp===2? 6 : 11);
+        const base5 = stp===1? 5 : (stp===2? 6 : 11);
+        const d  = p.atkMul===1? base5 : Math.round(base5*p.atkMul);   // 甚尔：纯体术，普攻更痛
         // 前两段击退很小，保证连段能接上；第三段才是挑空终结
         const kb = stp===1? 1.2 : (stp===2? 1.6 : 8);
         const must = mustBlackFlash(p);      // 无名领域内：必定黑闪
@@ -2309,6 +2371,15 @@ function updatePlayer(p, foe, k){
         else damage(p, foe, d, p.facing*kb, stp===3?10:0.5, stp===3?22:15, 'punch');   // 硬直略短，挨打后能更快还手
         ring(foe.x, ay, '#ffffff', stp===3?110:70, 5);
         spawnParticles(foe.x, ay, stp===3?16:9, '#ffffff', 6, 22, 4, 0.3);
+        if(tj){                                        // 甚尔拳头重：命中定格更久 + 横向崩拳白痕
+          hitStop = Math.max(hitStop, stp===3? 7 : 4);
+          shake   = Math.max(shake,   stp===3? 10 : 5);
+          if(stp<3) for(let i=0;i<3;i++){
+            const yy = ay + rand(-16,16);
+            particles.push({ x:foe.x, y:yy, vx:p.facing*rand(3,7), vy:rand(-0.6,0.6),
+              life:8, max:8, color:'#ffffff', size:rand(1.5,3), grav:0 });
+          }
+        }
         p.atkHit = true;
       }
       p.atkHit = true;
@@ -2488,6 +2559,82 @@ function updatePlayer(p, foe, k){
     if(execFx) execFx.t++;                              // 演出计时由逻辑帧驱动（渲染只读）
     if(T>=118){ p.state='idle'; p.stateT=0; p.atkHit=false; execFx=null; }
   }
+  /* ---------- 甚尔：释魂刀（突进 · 斩魂 · 吸血） ---------- */
+  else if(p.state==='tojiSoul'){
+    const T = p.stateT;
+    p.blocking = false;
+    if(T===0){
+      ring(p.x, p.y-p.h*0.5, '#cfe0ff', 90, 3);
+      announce('释 魂 刀', 44, '#e2e9f6', '一刀斩在灵魂上 —— 防御挡不住，伤害的一部分会流回他体内');
+    }
+    if(T<6) p.vx *= 0.5;                                  // 压身：刀贴到腰侧
+    else if(T<16){                                        // 一步贴脸
+      p.vx = p.facing*16*p.spd;
+      if(T%2===0) ghosts.push({x:p.x, y:p.y, w:p.w, h:p.h, facing:p.facing, char:p.char, life:14, max:14});
+    } else p.vx *= 0.72;
+
+    if(T>=7 && T<=17 && !p.atkHit && foe.hp>0 && foe.invul<=0 &&
+       Math.abs(foe.x-p.x) < 104 && Math.abs((foe.y-foe.h*0.5)-(p.y-p.h*0.5)) < 100){
+      p.atkHit = true;
+      const ay = foe.y - foe.h*0.55;
+      const bx = foe.x - p.facing*16;
+      damage(p, foe, TOJI_SOUL_DMG, p.facing*8, 4, 36, 'soul');   // 无视防御的斩魂
+      const heal = Math.round(TOJI_SOUL_DMG*TOJI_SOUL_LIFE);
+      p.hp = clamp(p.hp + heal, 0, p.maxHp);
+      showDmg(p.x, p.y-p.h*0.9, '+'+heal, '#8ef0b0', 18);
+      ring(bx, ay, '#e6f0ff', 220, 7);
+      ring(bx, ay, '#8fb6ff', 150, 5);
+      spawnParticles(bx, ay, 26, '#e6f0ff', 9, 34, 6, 0.06);
+      /* 灵魂被斩的虚影：白色刀痕留在原处 */
+      for(let i=0;i<7;i++)
+        particles.push({ x:bx+rand(-30,30), y:ay+rand(-46,46), vx:rand(-0.7,0.7), vy:rand(-2.4,-0.6),
+          life:rand(26,44), max:44, color:'#cfe0ff', size:rand(2,4.5), grav:-0.02 });
+      /* 吸回来的血：从敌人身上飞回自己 */
+      for(let i=0;i<12;i++){
+        const a = rand(-0.9,0.9);
+        particles.push({ x:bx, y:ay, vx:Math.cos(a)*rand(-2.2,-0.6)+(p.x-bx)*0.04,
+          vy:Math.sin(a)*rand(-2,2), life:rand(16,26), max:26, color:'#8ef0b0', size:rand(2,4), grav:0 });
+      }
+      flash = Math.max(flash, 0.28); shake = Math.max(shake, 16); hitStop = Math.max(hitStop, 9);
+      slowmo = Math.min(slowmo, 0.55);
+    }
+    if(T>36){ p.state='idle'; p.stateT=0; p.atkHit=false; }
+  }
+  /* ---------- 甚尔：天逆鉾（封 4 秒 / 破领域） ---------- */
+  else if(p.state==='tojiInv'){
+    const T = p.stateT;
+    p.blocking = false;
+    p.vx *= 0.82;
+    if(T===0) announce('天 逆 鉾', 52, '#dfe7f4', '没有咒力的矛 —— 专戳咒力的接缝');
+    if(T<12 && T%2===0) spawnParticles(p.x+p.facing*46, p.y-p.h*0.72, 3, '#dfe7f4', 2.4, 16, 3, 0.01);
+    if(T===12){
+      const ay = foe.y - foe.h*0.55;
+      const foeDomain = domain && domain.owner!==p.id;
+      if(foeDomain){
+        /* 一矛戳穿领域的核：整屏从中间碎开 */
+        const dop = players[domain.owner];
+        domain = null;
+        if(dop.state==='domain'){ dop.state='idle'; dop.stateT=0; }
+        dop.stun = Math.max(dop.stun, 48); dop.vx = 0;
+        startShatter(W*0.5, H*0.46);
+        flash = Math.max(flash, 1.5); shake = Math.max(shake, 48); hitStop = Math.max(hitStop, 20);
+        slowmo = 0.35; bfSlow = 26; zoom = Math.max(zoom, 1.32);
+        ring(foe.x, ay, '#ffffff', 430, 12);
+        ring(foe.x, ay, '#c8ccd8', 330, 8);
+        spawnParticles(foe.x, ay, 42, '#e6f0ff', 11, 44, 7, 0.1);
+        announce('天 逆 鉾 · 領 域 破 壊', 120, '#e6f0ff', '咒力构筑的领域，被一柄没有咒力的矛从中间戳碎');
+      } else {
+        foe.frozen = Math.max(foe.frozen, TOJI_LOCK); foe.frozenBy = 'inv';
+        foe.vx = 0; foe.vy = Math.min(foe.vy, 0); foe.blocking = false;
+        flash = Math.max(flash, 0.55); shake = Math.max(shake, 18); hitStop = Math.max(hitStop, 8);
+        ring(foe.x, ay, '#c8ccd8', 190, 6);
+        ring(foe.x, ay, '#ffffff', 130, 4);
+        spawnParticles(foe.x, ay, 18, '#dfe7f4', 6, 26, 4);
+        announce('天 逆 鉾 · 封', 80, '#c8ccd8', '矛尖抵住咒力的接缝 —— 4 秒动不了');
+      }
+    }
+    if(T>32){ p.state='idle'; p.stateT=0; }
+  }
   /* ---------- 普通状态 ---------- */
   else {
     let mv = 0;
@@ -2497,7 +2644,7 @@ function updatePlayer(p, foe, k){
       // 地面响应干脆（起步即满速），空中保留惯性与操控
       if(mv!==0){
         const rush = domain && domain.owner===p.id && domain.kind==='nao';   // 时轮金刚：速度提升到极致
-        const target = mv*((p.onGround? 5.9 : 5.2) * (rush? 1.75 : 1));
+        const target = mv*((p.onGround? 5.9 : 5.2) * (rush? 1.75 : 1) * p.spd);   // p.spd：甚尔的体术移速更快
         // 同向：立刻满速，跟手；反向急转：2~3 帧过渡，不会生硬地瞬间掉头
         p.vx = p.onGround? (mv*p.vx < 0? p.vx + (target-p.vx)*0.45 : target)
                           : p.vx + (target-p.vx)*0.30;
@@ -2956,6 +3103,250 @@ function drawNaoya(p, t){
     ctx.fillStyle='rgba(8,12,28,0.7)'; ctx.fillRect(x-26, headY-30, 52, 6);
     ctx.fillStyle='#a8d878'; ctx.fillRect(x-26, headY-30, 52*k, 6);
   }
+
+  ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
+  ctx.fillStyle = p.id===0? '#5aa0ff':'#ff7080';
+  ctx.fillText(p.id===0?'P1':(vsCPU?'CPU':'P2'), x, headY-38);
+}
+
+/* ================= 伏黑甚尔 绘制 ================= */
+/* 刀：释魂刀（无咒力的物理刀，斩的是灵魂） */
+function drawTojiKatana(hx, hy, dx, dy, len, glow){
+  const nx = -dy, ny = dx;
+  const ex = hx+dx*len, ey = hy+dy*len;
+  ctx.strokeStyle='#242833'; ctx.lineWidth=6; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(hx-dx*13, hy-dy*13); ctx.lineTo(hx+dx*4, hy+dy*4); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(hx+nx*3.4, hy+ny*3.4);
+  ctx.lineTo(ex+nx*1.2, ey+ny*1.2);
+  ctx.lineTo(ex-nx*1.6, ey-ny*1.6);
+  ctx.lineTo(hx-nx*2.6, hy-ny*2.6);
+  ctx.closePath();
+  ctx.fillStyle = glow? '#eef6ff' : '#cdd7e6'; ctx.fill();
+  ctx.strokeStyle='#8b95a8'; ctx.lineWidth=1.2; ctx.stroke();
+  ctx.strokeStyle = glow? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.6)';
+  ctx.lineWidth=1.4;
+  ctx.beginPath(); ctx.moveTo(hx+nx*3.4, hy+ny*3.4); ctx.lineTo(ex+nx*1.2, ey+ny*1.2); ctx.stroke();
+  ctx.strokeStyle='#3a4252'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(hx+nx*6, hy+ny*6); ctx.lineTo(hx-nx*6, hy-ny*6); ctx.stroke();
+  if(glow){
+    ctx.strokeStyle='rgba(206,226,255,0.55)'; ctx.lineWidth=7;
+    ctx.beginPath(); ctx.moveTo(hx,hy); ctx.lineTo(ex,ey); ctx.stroke();
+  }
+}
+/* 天逆鉾：漫画原样的短刃 —— 三叉刃 + 缠绳短柄 + 环形尾，专戳咒力的接缝 */
+function drawTojiSpear(hx, hy, dx, dy){
+  const nx = -dy, ny = dx;
+  ctx.lineCap='round';
+  /* 握柄：缠绳 */
+  ctx.strokeStyle='#1b1e26'; ctx.lineWidth=7;
+  ctx.beginPath(); ctx.moveTo(hx-dx*34, hy-dy*34); ctx.lineTo(hx+dx*4, hy+dy*4); ctx.stroke();
+  ctx.strokeStyle='rgba(216,222,234,0.4)'; ctx.lineWidth=1.4;
+  for(let i=0;i<8;i++){
+    const px = hx-dx*(32-i*4.5), py = hy-dy*(32-i*4.5);
+    ctx.beginPath(); ctx.moveTo(px-nx*3, py-ny*3); ctx.lineTo(px+nx*3+dx*2.4, py+ny*3+dy*2.4); ctx.stroke();
+  }
+  /* 环形尾 */
+  ctx.strokeStyle='#cfd6e2'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.arc(hx-dx*38, hy-dy*38, 4.2, 0, 7); ctx.stroke();
+  /* 护手 */
+  ctx.strokeStyle='#3a4150'; ctx.lineWidth=4.5;
+  ctx.beginPath(); ctx.moveTo(hx+dx*5+nx*8, hy+dy*5+ny*8); ctx.lineTo(hx+dx*5-nx*8, hy+dy*5-ny*8); ctx.stroke();
+  /* 三叉刃：主刃 + 两侧分叉 */
+  ctx.strokeStyle='#dbe3ee'; ctx.lineWidth=4;
+  ctx.beginPath();
+  ctx.moveTo(hx+dx*7+nx*3.2, hy+dy*7+ny*3.2);
+  ctx.quadraticCurveTo(hx+dx*38+nx*3.8, hy+dy*38+ny*3.8, hx+dx*64, hy+dy*64);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(hx+dx*7-nx*3.2, hy+dy*7-ny*3.2);
+  ctx.quadraticCurveTo(hx+dx*38-nx*2.2, hy+dy*38-ny*2.2, hx+dx*64, hy+dy*64);
+  ctx.stroke();
+  ctx.lineWidth=3;
+  for(const s of [-1,1]){
+    const bx = hx+dx*30, by = hy+dy*30;
+    ctx.beginPath();
+    ctx.moveTo(bx+nx*3*s, by+ny*3*s);
+    ctx.quadraticCurveTo(bx+dx*6+nx*13*s, by+dy*6+ny*13*s, hx+dx*47+nx*8*s, hy+dy*47+ny*8*s);
+    ctx.stroke();
+  }
+  /* 刃口高光 */
+  ctx.strokeStyle='rgba(255,255,255,0.75)'; ctx.lineWidth=1.4;
+  ctx.beginPath(); ctx.moveTo(hx+dx*8+nx*3.2, hy+dy*8+ny*3.2); ctx.lineTo(hx+dx*46+nx*2, hy+dy*46+ny*2); ctx.stroke();
+}
+function drawToji(p, t){
+  const f = p.facing, x = p.x, y = p.y;
+  const skin = '#e8c49c';
+  const st = p.state;
+  let lean=0, crouch=0, legSplit=0, armAngle=0, armLen=0, spear=false, bladeGlow=false, bladeLen=0, backSheathe=false;
+
+  if(st==='idle'){ crouch = Math.sin(t*0.045)*1.6; armAngle = f*0.12; armLen = 8; }   // 呼吸起伏
+  if(st==='walk'){ legSplit = Math.sin(p.stateT*0.28)*13; lean = f*5; crouch = Math.abs(Math.sin(p.stateT*0.28))*2; }
+  if(st==='jump'){ legSplit = 7; crouch = 5; }
+  if(p.landSquash>0 && (st==='idle'||st==='walk')) crouch = p.landSquash*0.7;
+  if(st==='block'){ crouch = 11; lean = -f*5; armAngle = f*0.55; armLen = 28; }
+  if(st==='punch'){                                        // 甚尔出手快：帧数与逻辑侧同步（4/3/6）
+    const s = p.atkStep, tt = p.stateT;
+    if(s===1){ const k=Math.min(1,tt/4); armAngle=f*(0.2-k*1.2); armLen=22+k*58; lean=f*k*7; crouch=3*k; }
+    if(s===2){ const k=Math.min(1,tt/3); armAngle=f*(-0.5-k*0.9); armLen=26+k*62; lean=f*k*9; crouch=4*k; }
+    if(s===3){ const k=Math.min(1,tt/6); armAngle=f*(-0.15+k*0.7); armLen=28+k*58; lean=-f*k*10; crouch=12*k; }
+    backSheathe = true;                                    // 打拳时刀收在背上，双手都是空的
+  }
+  if(st==='tojiSoul'){                                   // 释魂刀：压身 → 一记突刺
+    const tt = p.stateT;
+    if(tt<6){ lean=-f*9; crouch=7; armAngle=f*0.85; armLen=22; bladeLen=52; }
+    else if(tt<17){ lean=f*16; armAngle=f*1.64; armLen=64; bladeLen=104; bladeGlow=true; }
+    else { lean=f*8; armAngle=f*1.46; armLen=54; bladeLen=94; bladeGlow = tt<26; }
+  }
+  if(st==='tojiInv'){ lean=-f*4; armAngle=f*1.35; armLen=42; spear=true; }   // 天逆鉾：短刃前指
+  if(st==='down'){ crouch = 70; backSheathe = true; }
+  if(st==='frozen'){ lean = -f*4; crouch = 4; backSheathe = true; }
+  if(st==='dodge'){ lean = f*10; crouch = 8; legSplit = 9; backSheathe = true; }
+  if(st==='walk' || st==='jump' || st==='block' || st==='idle') backSheathe = true;   // 平时刀都背在背上
+  if(p.stun>0){ lean = -f*8*Math.sin(t*0.05); backSheathe = true; }
+
+  const bodyY = y - crouch;
+  const headR = 19;
+  const hipY = bodyY - 50;
+  const shoulderY = bodyY - 88;
+  const headY = shoulderY - headR - 2;
+
+  if(st==='tojiSoul' || st==='tojiInv'){                  // 无咒力：只有一股黑压压的体术气势
+    const g = ctx.createRadialGradient(x, bodyY-58, 8, x, bodyY-58, 98);
+    g.addColorStop(0, st==='tojiSoul'? 'rgba(210,228,255,0.28)' : 'rgba(198,208,224,0.24)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x, bodyY-58, 96, 0, 7); ctx.fill();
+  }
+
+  ctx.fillStyle='rgba(0,0,0,0.42)';
+  ctx.beginPath(); ctx.ellipse(x, GROUND+6, 36, 8, 0, 0, 7); ctx.fill();
+
+  ctx.save();
+  ctx.translate(x, bodyY); ctx.rotate(lean*Math.PI/180); ctx.translate(-x, -bodyY);
+
+  /* 背上的刀鞘（画在躯干后面）：从左肩斜到右腰 */
+  if(backSheathe){
+    ctx.save();
+    ctx.translate(x, bodyY-62);
+    ctx.rotate(f*(-0.62));
+    ctx.strokeStyle='#0e1016'; ctx.lineCap='round'; ctx.lineWidth=8;
+    ctx.beginPath(); ctx.moveTo(0, -34); ctx.lineTo(0, 30); ctx.stroke();
+    ctx.strokeStyle='rgba(90,96,112,0.55)'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(-3, -30); ctx.lineTo(-3, 26); ctx.stroke();
+    ctx.restore();
+    /* 刀柄从肩后探出 */
+    ctx.save();
+    ctx.translate(x - f*10, shoulderY+4);
+    ctx.rotate(f*(-0.62));
+    ctx.strokeStyle='#242833'; ctx.lineWidth=5;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -22); ctx.stroke();
+    ctx.strokeStyle='#8b95a8'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(0, -20); ctx.lineTo(0, -30); ctx.stroke();
+    ctx.restore();
+  }
+
+  /* 腿：两条深色裤腿，简单直接 */
+  ctx.strokeStyle='#20242f'; ctx.lineWidth=13; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(x, hipY); ctx.lineTo(x-10-legSplit, bodyY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, hipY); ctx.lineTo(x+10+legSplit, bodyY); ctx.stroke();
+  ctx.strokeStyle='#0d0f15'; ctx.lineWidth=8;
+  ctx.beginPath(); ctx.moveTo(x-10-legSplit, bodyY-3); ctx.lineTo(x-13-legSplit, bodyY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+10+legSplit, bodyY-3); ctx.lineTo(x+13+legSplit, bodyY); ctx.stroke();
+
+  /* 躯干：黑色背心，就一个简洁的梯形 + 胸口开口 */
+  ctx.fillStyle='#15171f';
+  ctx.beginPath();
+  ctx.moveTo(x-20, hipY+2);
+  ctx.lineTo(x-24, shoulderY+6);
+  ctx.quadraticCurveTo(x, shoulderY-5, x+24, shoulderY+6);
+  ctx.lineTo(x+20, hipY+2);
+  ctx.quadraticCurveTo(x, hipY+9, x-20, hipY+2);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle=skin;                                        // 胸口露的皮肤
+  ctx.beginPath();
+  ctx.moveTo(x-10, shoulderY+1); ctx.lineTo(x+f*2, shoulderY+22); ctx.lineTo(x+10, shoulderY+1);
+  ctx.quadraticCurveTo(x, shoulderY-3, x-10, shoulderY+1);
+  ctx.closePath(); ctx.fill();
+
+  /* 手臂：一整条皮肤色，简简单单 */
+  const shx = x + f*17, shy = shoulderY+9;
+  const handX = shx + Math.sin(armAngle)*armLen*f;
+  const handY = shy + Math.cos(armAngle)*armLen;
+  ctx.strokeStyle='#15171f'; ctx.lineWidth=12;               // 后臂
+  ctx.beginPath(); ctx.moveTo(shx - f*10, shy); ctx.quadraticCurveTo(shx-f*18, shy+26, shx-f*14, shy+44); ctx.stroke();
+  ctx.fillStyle=skin; ctx.beginPath(); ctx.arc(shx-f*14, shy+46, 6, 0, 7); ctx.fill();
+  ctx.strokeStyle=skin; ctx.lineWidth=11;                    // 前臂
+  ctx.beginPath(); ctx.moveTo(shx, shy); ctx.lineTo(handX, handY); ctx.stroke();
+  ctx.fillStyle=skin;
+  ctx.beginPath(); ctx.arc(handX, handY, 7.5, 0, 7); ctx.fill();   // 拳
+
+  /* 兵器：只有技能时才在手 */
+  const ax = Math.sin(armAngle)*f, ay = Math.cos(armAngle);
+  if(spear) drawTojiSpear(handX, handY, ax, ay);
+  else if(bladeLen>0) drawTojiKatana(handX, handY, ax, ay, bladeLen, bladeGlow);
+
+  /* 出拳的挥拳轨迹（白弧 + 拳风），帧数与逻辑侧同步 */
+  if(st==='punch'){
+    const s = p.atkStep;
+    const act = s===1?4:(s===2?3:6);
+    const d = p.stateT - act;
+    if(d>=0 && d<7){
+      const a = 1 - d/7;
+      ctx.globalAlpha = a;
+      let a0, a1, ccw;
+      if(s===3){ a0 = 1.0; a1 = -1.0; ccw = true; }   // 上勾拳：自下而上
+      else     { a0 = -0.55; a1 = 0.55; ccw = false; } // 直拳：横向挥出
+      if(f<0){ const t0=Math.PI-a0, t1=Math.PI-a1; a0=t0; a1=t1; ccw=!ccw; }
+      ctx.lineCap='round';
+      ctx.strokeStyle='rgba(255,255,255,0.85)'; ctx.lineWidth = 7*a+1;
+      ctx.beginPath(); ctx.arc(handX, handY, 26+d*3, a0, a1, ccw); ctx.stroke();
+      if(d<3){
+        ctx.fillStyle='rgba(255,255,255,'+(0.45*(1-d/3))+')';
+        ctx.beginPath(); ctx.arc(handX, handY, 15+d*6, 0, 7); ctx.fill();
+      }
+      ctx.globalAlpha=1;
+    }
+  }
+
+  /* 头：圆脸 */
+  ctx.fillStyle=skin;
+  ctx.beginPath(); ctx.arc(x+f*2, headY, headR, 0, 7); ctx.fill();
+  /* 黑色锅盖头：圆弧罩顶 + 平直刘海 + 两侧鬓角 */
+  ctx.fillStyle='#14151b';
+  ctx.beginPath();
+  ctx.arc(x+f*2, headY-3, headR+1, Math.PI*0.96, Math.PI*2.04);
+  ctx.closePath(); ctx.fill();
+  rr(x+f*2-headR-1, headY-7, (headR+1)*2, 8, 3); ctx.fill();
+  rr(x+f*2-headR-1.5, headY-4, 4.5, 12, 2); ctx.fill();
+  rr(x+f*2+headR-3, headY-4, 4.5, 12, 2); ctx.fill();
+  /* 脸上没什么表情：就两个点当眼睛 */
+  ctx.fillStyle='#20222b';
+  ctx.beginPath(); ctx.arc(x+f*8, headY+5, 1.9, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+f*0, headY+5, 1.9, 0, 7); ctx.fill();
+  /* 嘴角那道疤：唯一的记号 */
+  ctx.strokeStyle='#a9805e'; ctx.lineWidth=1.6;
+  ctx.beginPath(); ctx.moveTo(x+f*10, headY+12); ctx.lineTo(x+f*14.5, headY+14.5); ctx.stroke();
+
+  /* 释魂刀命中：灵魂被斩开的白色刀痕 */
+  if(st==='tojiSoul' && p.atkHit && p.stateT<24){
+    const k = 1-(p.stateT-17)/7;
+    if(k>0){
+      ctx.globalAlpha = clamp(k,0,1)*0.85;
+      ctx.strokeStyle='#eaf4ff'; ctx.lineWidth=4; ctx.lineCap='round';
+      const cx2 = x+f*72, cy2 = bodyY-54;
+      ctx.beginPath(); ctx.moveTo(cx2-26, cy2+30); ctx.lineTo(cx2+26, cy2-30); ctx.stroke();
+      ctx.lineWidth=1.6;
+      ctx.beginPath(); ctx.moveTo(cx2-30, cy2+8); ctx.lineTo(cx2+16, cy2-10); ctx.stroke();
+      ctx.globalAlpha=1;
+    }
+  }
+  if(p.hitFlash>0 && p.hitFlash%4<2){
+    ctx.globalCompositeOperation='source-atop';
+    ctx.fillStyle='rgba(255,80,90,0.5)';
+    ctx.beginPath(); ctx.arc(x, bodyY-55, 70, 0, 7); ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+  }
+  ctx.restore();
 
   ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
   ctx.fillStyle = p.id===0? '#5aa0ff':'#ff7080';
@@ -3622,11 +4013,25 @@ function drawGhosts(){                     // 闪避残影：画在角色之下
 }
 
 function drawChar(p, t){
-  if(p.char==='naoya') drawNaoya(p, t);
+  if(p.char==='toji') drawToji(p, t);
+  else if(p.char==='naoya') drawNaoya(p, t);
   else if(p.char==='sukuna') drawSukuna(p, t);
   else if(p.char==='yuji') drawYuji(p, t);
   else if(p.char==='yuta') drawYuta(p, t);
   else drawGojo(p, t);
+  /* 被天逆鉾钉住：银色矛影压在咒力的接缝上 */
+  if(p.hp>0 && p.frozen>0 && p.frozenBy==='inv'){
+    const cx2 = p.x, cy2 = p.y-p.h*0.55;
+    const a2 = 0.5+0.25*Math.sin(t*0.02);
+    ctx.save();
+    ctx.globalAlpha=a2; ctx.strokeStyle='#e2eaf6'; ctx.lineWidth=3.4; ctx.lineCap='round';
+    for(const s of [-1,1]){
+      ctx.beginPath(); ctx.moveTo(cx2-46*s, cy2-44); ctx.lineTo(cx2+46*s, cy2+44); ctx.stroke();
+    }
+    ctx.globalAlpha=a2*0.55; ctx.lineWidth=1.5; ctx.strokeStyle='#9fb0c8';
+    ctx.beginPath(); ctx.arc(cx2, cy2, 54, 0, 7); ctx.stroke();
+    ctx.restore();
+  }
   // 无敌帧：淡蓝白护罩（闪避 / 茈 等生效时）
   if(p.invul>0 && p.hp>0 && p.state!=='hollowFire' && p.state!=='hollowCharge'){
     const kk2 = Math.min(1, p.invul/12);
@@ -4777,6 +5182,103 @@ function drawSkillBars(){
 }
 
 /* ================= HUD ================= */
+/* ================= 屏幕碎裂（天逆鉾 · 破领域） ================= */
+function startShatter(cx, cy){
+  const img = document.createElement('canvas');
+  img.width = W; img.height = H;
+  try{ img.getContext('2d').drawImage(cv, 0, 0); }catch(e){ return; }   // 把这一刻的画面做成碎片底图
+  const list = [];
+  const R = Math.hypot(W, H)*0.62, N = 20, RINGS = 3;
+  for(let ring=0; ring<RINGS; ring++){
+    const r0 = ring===0? 0 : R*(ring/RINGS)*1.02;
+    const r1 = R*((ring+1)/RINGS)*1.14;
+    for(let i=0;i<N;i++){
+      const a0 = i/N*6.2832 + ring*0.13 + rand(-0.04,0.04);
+      const a1 = (i+1)/N*6.2832 + ring*0.13 + rand(-0.04,0.04);
+      const rA = r0*(ring===0? 1 : rand(0.88,1.08));
+      const rB = r1*rand(0.9,1.1);
+      const pts = ring===0
+        ? [{x:cx,y:cy},
+           {x:cx+Math.cos(a0)*rB, y:cy+Math.sin(a0)*rB},
+           {x:cx+Math.cos(a1)*rB, y:cy+Math.sin(a1)*rB}]
+        : [{x:cx+Math.cos(a0)*rA, y:cy+Math.sin(a0)*rA},
+           {x:cx+Math.cos(a1)*rA, y:cy+Math.sin(a1)*rA},
+           {x:cx+Math.cos(a1)*rB, y:cy+Math.sin(a1)*rB},
+           {x:cx+Math.cos(a0)*rB, y:cy+Math.sin(a0)*rB}];
+      let mx=0, my=0, bx0=1e9, by0=1e9, bx1=-1e9, by1=-1e9;
+      for(const q of pts){
+        mx+=q.x; my+=q.y;
+        bx0=Math.min(bx0,q.x); by0=Math.min(by0,q.y);
+        bx1=Math.max(bx1,q.x); by1=Math.max(by1,q.y);
+      }
+      mx/=pts.length; my/=pts.length;
+      const dx = mx-cx, dy = my-cy, len = Math.hypot(dx,dy)||1;
+      const sp = 0.9 + ring*0.7;
+      list.push({ pts, mx, my,
+        sx: Math.max(0,bx0), sy: Math.max(0,by0),
+        sw: Math.min(W,bx1)-Math.max(0,bx0), sh: Math.min(H,by1)-Math.max(0,by0),
+        vx: dx/len*sp*rand(0.7,1.9), vy: dy/len*sp*rand(0.7,1.9) - rand(0.2,1.5),
+        vr: (Math.random()<0.5?-1:1)*rand(0.004,0.02)*sp,
+        delay: ring*2 + (i%4) });
+    }
+  }
+  shatter = { img, list, t:0, max:100, cx, cy };
+}
+function drawShatter(){
+  if(!shatter) return;
+  const s = shatter; s.t++;
+  if(s.t>s.max){ shatter=null; return; }
+  const a = s.t<7? s.t/7 : Math.max(0, (s.max-s.t)/26);
+  if(a<=0){ shatter=null; return; }
+  ctx.save();
+  /* 裂缝里是虚空 */
+  ctx.fillStyle = 'rgba(3,5,10,'+(0.92*a)+')'; ctx.fillRect(0,0,W,H);
+  /* 碎片：把碎裂那一刻的画面按多边形切下来，飞出去 */
+  for(const f of s.list){
+    if(s.t < f.delay) continue;
+    const age = s.t - f.delay;
+    const dx = f.vx*age*0.55, dy = f.vy*age*0.55 + age*age*0.014;
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(f.mx+dx, f.my+dy);
+    ctx.rotate(f.vr*age);
+    ctx.translate(-f.mx, -f.my);
+    ctx.beginPath();
+    f.pts.forEach((q,i)=> i? ctx.lineTo(q.x,q.y) : ctx.moveTo(q.x,q.y));
+    ctx.closePath();
+    ctx.clip();
+    if(f.sw>0 && f.sh>0) ctx.drawImage(s.img, f.sx, f.sy, f.sw, f.sh, f.sx, f.sy, f.sw, f.sh);
+    ctx.restore();
+  }
+  /* 断口：白亮的边 */
+  ctx.globalAlpha = a*0.9; ctx.strokeStyle='#ffffff'; ctx.lineWidth=1.8;
+  for(const f of s.list){
+    const age = s.t - f.delay; if(age<0) continue;
+    const dx = f.vx*age*0.55, dy = f.vy*age*0.55 + age*age*0.014;
+    ctx.beginPath();
+    f.pts.forEach((q,i)=> i? ctx.lineTo(q.x+dx,q.y+dy) : ctx.moveTo(q.x+dx,q.y+dy));
+    ctx.closePath(); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  /* 中心：戳穿点的白光 + 放射裂纹 */
+  if(s.t<30){
+    const k = 1 - s.t/30;
+    const g = ctx.createRadialGradient(s.cx,s.cy,0,s.cx,s.cy,300*k+40);
+    g.addColorStop(0,'rgba(255,255,255,'+(0.95*k)+')');
+    g.addColorStop(1,'rgba(190,214,255,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(s.cx,s.cy,300*k+40,0,7); ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,'+(0.9*k)+')'; ctx.lineWidth=2;
+    for(let i=0;i<14;i++){
+      const an = i/14*6.2832 + 0.2;
+      ctx.beginPath();
+      ctx.moveTo(s.cx+Math.cos(an)*20, s.cy+Math.sin(an)*20);
+      ctx.lineTo(s.cx+Math.cos(an)*(90+k*260), s.cy+Math.sin(an)*(90+k*260));
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 function drawHUD(t){
   ctx.save();
   ctx.translate(0, 30);          // 下移，给左上角退出键让出位置
@@ -4805,14 +5307,17 @@ function drawHUD(t){
     // 咒力满时的提示随角色变化
     const s3 = CH.skills[2], s4 = CH.skills[3];
     const kk = left? sk=>sk.p1 : sk=>sk.p2;
-    const cdOK = sk=> !sk.cd || p.cd[sk.cd]<=0;
-    const s3Name = p.char==='yuta'? curMimic(p).short : s3.short;   // 模仿术式名随轮换变化
-    const s3Hint = p.char==='yuta'? kk(s3)+' 键' : '长按 '+kk(s3);
+    const cdOK = sk=> !!(sk && (!sk.cd || p.cd[sk.cd]<=0));
+    let hint = '咒 力';
+    if(p.char==='toji') hint = '无 咒 力 · 天 与 咒 缚';           // 甚尔没有咒力槽
+    else if(p.energy>=100){
+      if(p.char==='yuta' && inAiAi(p)) hint = '纯爱大炮 就绪 — '+kk(s4)+' 键';
+      else if(cdOK(s4)) hint = s4.short+' 就 绪 — '+kk(s4)+' 键';
+      else if(s3) hint = (p.char==='yuta'? curMimic(p).short : s3.short)+' 就 绪 — '+
+                         (p.char==='yuta'? kk(s3)+' 键' : '长按 '+kk(s3));
+    }
     ctx.fillStyle='#cdd6ee'; ctx.font='11px sans-serif';
-    ctx.fillText(p.energy<100? '咒 力'
-      : (p.char==='yuta' && inAiAi(p))? '纯爱大炮 就绪 — '+kk(s4)+' 键'
-      : (cdOK(s4)? s4.short+' 就 绪 — '+kk(s4)+' 键'
-                 : s3Name+' 就 绪 — '+s3Hint), bx+132, 70);
+    ctx.fillText(hint, bx+132, 70);
 
     // 四个技能槽（随角色变化；乙骨领域内 R 键变为纯爱大炮）
     CH.skills.forEach((sk, i)=>{
@@ -4982,7 +5487,7 @@ function updateAI(p, foe){
   const yt  = p.char==='yuta';
 
   // 通用：对手贴身 / 术式逼近时闪避（突进 + 无敌帧）
-  if(!busy && p.state!=='dodge' && p.cd.dodge<=0 && p.energy>=14 && Math.random()<0.04*L.react){
+  if(!busy && p.state!=='dodge' && p.cd.dodge<=0 && (p.char==='toji' || p.energy>=14) && Math.random()<0.04*L.react){
     const threat = adx<210 || orbs.some(o=>o.owner!==p.id && Math.abs(o.x-p.x)<170) ||
                    foe.state==='dashPunch' || foe.state==='thrust' || foe.state==='kesaSlash';
     if(threat){ if(adx<200 && Math.random()<0.5){ aiPress(p.x<foe.x? 'AIL':'AIR'); ai.hold[p.x<foe.x? 'AIL':'AIR'] = 3; } aiTap(p.aiKeys.dodge); }
@@ -5047,7 +5552,9 @@ function updateAI(p, foe){
         if(adx<560 && p.cd.dash<=0 && p.energy>=18 && Math.random()<P(0.10)) aiTap(aS(p,1)); // 冲拳突进
       } else if(yt){
         if(adx<560 && p.cd.thrust<=0 && p.energy>=16 && Math.random()<P(0.10)) aiTap(aS(p,1)); // 突刺突进
-      } else if(adx<520 && p.cd.red<=0 && p.energy>=22 && Math.random()<P(0.10)) aiTap(aS(p,2));
+      } else if(p.char==='toji'){                                 // 甚尔：突进斩魂
+      if(adx<560 && p.cd.soul<=0 && Math.random()<P(0.12)) aiTap(aS(p,1));
+    } else if(adx<520 && p.cd.red<=0 && p.energy>=22 && Math.random()<P(0.10)) aiTap(aS(p,2));
     }
   } else if(ai.mode==='retreat'){
     if(adx<560) keys[foe.x>p.x?'AIL':'AIR'] = true;
@@ -5070,12 +5577,16 @@ function updateAI(p, foe){
       else if(p.cd.mimic<=0 && Math.random()<P(0.12))
         aiTap(aS(p,3));                                                                     // 术式模仿（轮换）
       else if(p.cd.thrust<=0 && p.energy>=16 && adx>200 && Math.random()<P(0.09)) aiTap(aS(p,1));
+    } else if(p.char==='toji'){
+      if(p.cd.inv<=0 && Math.random()<P(0.05)) aiTap(aS(p,4));         // 天逆鉾：先封住
+      else if(p.cd.soul<=0 && Math.random()<P(0.11)) aiTap(aS(p,1));   // 释魂刀突进
     } else {
       if(p.cd.blue<=0 && p.energy>=12 && Math.random()<P(0.11)) aiTap(aS(p,1));
       else if(p.cd.red<=0 && p.energy>=22 && Math.random()<P(0.06)) aiTap(aS(p,2));
     }
   } else if(ai.mode==='attack'){
     if(adx>76) keys[foe.x>p.x?'AIR':'AIL'] = true;
+    else if(p.char==='toji' && adx<230 && p.cd.soul<=0 && Math.random()<P(0.20)) aiTap(aS(p,1));   // 释魂刀
     else if(suk && adx<170 && p.cd.grab<=0 && p.energy>=20 && Math.random()<P(0.14)) aiTap(aS(p,2)); // 捌
     else if(yj && adx<250 && p.cd.ycut<=0 && p.energy>=30 && Math.random()<P(0.10))
       aiHoldKey(aS(p,3), 12 + (Math.random()*28|0));                                             // 解
@@ -5144,9 +5655,14 @@ function updateDomain(){
       damage(p, foe, 1, 0, 0, 0, 'domain');      // 仅象征性伤害：领域的价值在于压制本身
       if(foe.hp>0){
         // 無量空処＝彻底固定；伏魔御厨子＝只给一小段硬直；真赝相爱＝不加任何控制
-        if(d.kind!=='aiai' && d.kind!=='nao'){
+        // 甚尔没有咒力：领域的效果找不到可以灌注的对象 —— 定不住他
+        if(d.kind!=='aiai' && d.kind!=='nao' && foe.char!=='toji'){
           foe.stun = (d.kind==='shrine' || d.kind==='nameless')? 34 : DOMAIN_HOLD + DOMAIN_CLOSE + 40;
           foe.vx = 0; foe.vy = Math.min(foe.vy, 0);
+        }
+        if(foe.char==='toji' && foe.hp>0){
+          announce('天 与 咒 缚', 60, '#dcceae', '没有咒力 —— 领域的必中效果对他无效');
+          spawnParticles(foe.x, foe.y-foe.h*0.5, 14, '#dcceae', 5, 24, 4);
         }
         foe.blocking = false;
       }
@@ -5203,8 +5719,8 @@ function updateDomain(){
         d.t = NAO_RUSH-70;                      // 拳头演出期间领域保持，打完自动收束
       }
     } else if(foe.hp>0){
-      foe.stun = Math.max(foe.stun, 24);         // 持续固定（不再掉血）
-      foe.vx *= 0.8;
+      if(foe.char==='toji'){ foe.vx *= 0.9; }    // 甚尔：无咒力，领域定不住他
+      else { foe.stun = Math.max(foe.stun, 24); foe.vx *= 0.8; }   // 持续固定（不再掉血）
     }
     // 真赝相爱维持更久（要撑满一个 5 秒的术式填充周期）
     const hold = domainHold(d);
@@ -5702,7 +6218,7 @@ function drawDomain(t){
 }
 
 /* ================= 角色选择 ================= */
-const CARD = { x0:72, gap:14, w:216, h:380, y:140 };   // 五张角色卡等分居中
+const CARD = { x0:52, gap:12, w:186, h:380, y:140 };   // 角色卡等分居中（数量自动跟随 CHAR_LIST）
 function beginSelect(mode){
   lbResetRun();                // 开始新的一场：通关计时清零
   nameEl.classList.add('hide');
@@ -5791,7 +6307,7 @@ function drawSelect(t){
     ctx.lineWidth = (doneP1||doneP2)? 4 : 2; ctx.stroke();
 
     ctx.textAlign='center';
-    ctx.font='bold 30px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#e8eefc';
+    ctx.font='bold ' + (w<200? 25 : 30) + 'px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#e8eefc';
     ctx.fillText(ch.name, x+w/2, y+40);
     ctx.font='14px "Microsoft YaHei", sans-serif'; ctx.fillStyle=ch.hud;
     ctx.fillText('— '+ch.sub+' —', x+w/2, y+62);
@@ -5820,7 +6336,7 @@ function drawSelect(t){
       ctx.font='13px "Microsoft YaHei", sans-serif'; ctx.fillStyle='#c8d2ec';
       ctx.fillText(sk.name, x+52, sy+2);
       ctx.font='11px sans-serif'; ctx.fillStyle='#6f7ba0';
-      ctx.fillText(sk.cost+' 咒力', x+w-66, sy+2);
+      ctx.fillText(sk.cost? sk.cost+' 咒力' : '无 咒 力', x+w-66, sy+2);
     }
     void(kk);
 
@@ -5996,7 +6512,9 @@ function drawLB(t){
   ctx.fillText('记录所有人的成绩：只记「疯狂 / 地狱」难度、单人打赢人机的通关用时　·　每个角色各取前 10', W/2, 100);
   ctx.fillStyle = '#5f6b90';
   ctx.fillText('同一个人同一角色只占一行 —— 取最高难度下的最快纪录（不同人各占一行）', W/2, 120);
-  const cw = 232, gap = 10, x0 = (W-(cw*5+gap*4))/2, yTop = 140;
+  const gap = 10, cols = CHAR_LIST.length;
+  const cw = Math.min(232, Math.floor((W-72-gap*(cols-1))/cols));
+  const x0 = (W-(cw*cols+gap*(cols-1)))/2, yTop = 140;
   CHAR_LIST.forEach((ch, ci)=>{
     const CH = CHARS[ch], x = x0 + ci*(cw+gap), list = lbGet(ch);
     rr(x, yTop, cw, 396, 12);
@@ -6129,6 +6647,11 @@ function syncPadKeys(){
     const CH = CHARS[ch] || CHARS.gojo;
     pad.querySelectorAll('.btn[data-slot]').forEach(el=>{
       const i = +el.dataset.slot, sk = CH.skills[i];
+      if(!sk){                                   // 甚尔只有两个技能：多余的槽位藏起来
+        el.style.display = 'none'; el.dataset.key = '';
+        return;
+      }
+      el.style.display = '';
       el.dataset.key = SKILLKEYS[ch][pi][i][0];
       // 图标随状态变化：乙骨的模仿键＝当前轮到的术式，领域内领域键＝炮
       let lb = sk.label, sub = '';
@@ -6235,7 +6758,7 @@ function vUp(code){ keys[code] = false; }
    这样双方看到的完全是同一场战斗，不会因为随机特效而分叉。      */
 const NET_FIELDS = ['x','y','vx','vy','facing','hp','maxHp','energy','onGround','state','stateT',
   'char','stock','atkStep','mimicIdx','invul','stun','blocking','hitFlash','wins','charge','seal',
-  'jumps','comboClock','comboWindow','cannonHits','landSquash','coyote'];
+  'jumps','comboClock','comboWindow','cannonHits','landSquash','coyote','burn'];
 const Net = {
   mode:'off',        // 'off' | 'host' | 'client'
   role:0,            // 本机操控的玩家序号（房主 0 / 客机 1）
@@ -6900,7 +7423,7 @@ function loop(now){
   if(training && state==='fight'){                 // 训练场：咒力无限、领域随时可再开、双方不死
     for(const p of players){
       p.energy = 100;
-      if(p.id===0 && !domain) p.cd.domain = 0;
+      if(p.id===0 && !domain){ p.cd.domain = 0; p.cd.inv = 0; }   // 领域/天逆鉾随时可再开
       if(p.hp < p.maxHp*0.15) p.hp = p.maxHp;      // 快见底就回满，不会 KO 中断练习
     }
     if(keys['Enter'] || keys['NumpadEnter']){ resetRound(); }      // 按 Enter 复位重来
@@ -7060,6 +7583,8 @@ function loop(now){
     ctx.fillRect(0,0,W,H);
     flash *= 0.86;
   }
+
+  drawShatter();             // 天逆鉾：整屏从中间碎开
 
   if(state!=='select') drawHUD(t);
   drawNaoUI(t);              // 直哉：被动字幕 / 咒言指令 / 重现选择 / 漫画定格

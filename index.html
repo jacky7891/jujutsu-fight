@@ -386,6 +386,8 @@ const NAO_RATE    = 1/260;// 每移动 1px 的加成
 const NAO_CAP     = 2.6;  // 被动：加成上限
 const NAO_RUSH_DMG  = 18; // 蓄满后的普攻＝突进一拳：基础伤害（再吃 ×2.6 的被动加成）
 const NAO_RUSH_RATE = 0.20; // 这一拳的黑闪概率 20%（普通普攻只有 5%）
+const NAO_EXEC_DMG  = 42; // 对被咒言钉住的对手按普攻：处决演出「比肩」的伤害
+const NAO_EXEC_SLOW = 0.5; // 处决演出的慢放倍率（0.5＝放慢一倍，看得清每一拍）
 const NAO_RUSH    = 300;  // 时轮金刚：领域维持时长（5 秒）
 const STOCK_MAX   = 4;    // 里香能储存的术式上限
 /* 术式模仿：不再按蓄力时长区分，而是固定顺序轮换，打完一个自动换成下一个 */
@@ -585,6 +587,7 @@ function updateNaoRewind(p){                          // 倒带：沿记录的�
 let naoPinFx = null;
 function naoPin(def, cmd){
   def.frozen = NAO_FROZEN;
+  def.frozenBy = 'pin';        // 标记：被咒言钉住 —— 播放整屏定格演出
   def.naoCmd = null; def.blocking = false;
   naoPinFx = { x:def.x, y:def.y-def.h*0.55, t:0, max:46 };
   flash = Math.max(flash, 0.9); shake = Math.max(shake, 18); hitStop = Math.max(hitStop, 12);
@@ -655,7 +658,8 @@ function makePlayer(id, char){
     naoReplay:null,   // 投射咒法：重演中 {frames, idx}
     naoCmd:null,      // 被咒言下了指令 {type, dir, t, moveT}
     naoGate:0,        // 刚按 R 放弃重现：这几帧屏蔽术式输入，防止误开领域
-    frozen:0,         // 被咒言钉住：完全不能动
+    frozen:0,         // 被钉住：完全不能动（投射定格 / 咒言钉住）
+    frozenBy:null,    // 'proj' = 被投射定格　'pin' = 被咒言钉住
     hitFlash:0, wins:0,
     grabbedBy:null, grabTarget:null, kmap: keyMap(id, ch), aiKeys: aiKeyMap(ch),
   };
@@ -668,7 +672,7 @@ function resetRound(){
   players[0].wins = w0; players[1].wins = w1;
   orbs = []; particles = []; beams = []; fusions = []; announcements = []; ghosts = [];
   slashes = []; fireZones = []; dmgNums = []; clash = null; darkPillars = []; wsFx = null;
-  danmaku.length = 0; naoPinFx = null;
+  danmaku.length = 0; naoPinFx = null; execFx = null;
   shake = 0; slowmo = 1; flash = 0; camX = 0; zoom = 1; domain = null;
   bfFx = 0; bfStop = 0; bfSlow = 0;
   aiReset(); syncPadKeys();
@@ -798,7 +802,7 @@ function damage(att, def, dmg, kb, kbY, stun, type){
     hitStop = 4; return;
   }
   if(def.state==='wsBreak') dmg *= WS_BREAK_MUL;   // 空间斩后的破绽期：这一下打得更疼
-  if(att && att.char==='naoya'){ dmg *= naoMul(att); att.moveDist = 0; }   // 直哉被动：跑得越远打得越痛，命中后清零
+  if(att && att.char==='naoya' && type!=='exec'){ dmg *= naoMul(att); att.moveDist = 0; }   // 直哉被动：跑得越远打得越痛（处决演出「比肩」除外，固定伤害）
   if(def.char==='naoya') def.moveDist = 0;         // 直哉被打中：移动蓄力清零
   dmg = wsSurvive(def, dmg);                       // 宿傩：致命一击削成「还剩一口气」，好起手空间斩
   def.hp -= dmg;
@@ -996,7 +1000,7 @@ function ko(winner, loser){
 /* ================= 术式球 ================= */
 function spawnOrb(cfg){
   orbs.push(Object.assign({ t:0, r:8, maxR:30, life:60, mode:'static', type:'blue',
-    pull:0, vx:0, vy:0, travel:0, holdLife:0, arrived:false }, cfg));
+    pull:0, vx:0, vy:0, travel:0, holdLife:0, arrived:false, hitOnce:false }, cfg));
 }
 
 // 术式顺转·苍 —— 向前【发射】引力球，飞出固定距离后停留吸附，随后引爆
@@ -1008,7 +1012,7 @@ function castBlue(p){
     type:'blue', owner:p.id, x:p.x + p.facing*70, y:p.y - p.h*0.55,
     mode:'move', vx:p.facing*BLUE_SPEED, r:14, maxR:26,
     travel:BLUE_TRAVEL, life:999, holdLife:BLUE_HOLD,
-    pull:190, pullForce:2.6, dmg:15,
+    pull:300, pullForce:4.8, dmg:16,          // 引力范围 / 吸力（越近越猛）/ 命中伤害
   });
   ring(p.x+p.facing*70, p.y-p.h*0.55, '#5aa0ff', 90, 5);
   p.vx -= p.facing*3;
@@ -1122,15 +1126,19 @@ function updateOrbs(){
           shake = Math.max(shake, 5);
         }
       }
-      // 引力吸附：把敌人往球心拉
+      // 引力吸附：把敌人往球心拉（在场上停留期间一直生效，越近越猛，能拖着人走）
       const foe = players[1-o.owner];
       if(foe.hp>0 && foe.invul<=0){
         const dx = o.x-foe.x, dy = o.y-(foe.y-foe.h*0.5);
         const d = Math.hypot(dx,dy)||1;
         if(d < o.pull){
-          const f = o.pullForce*(1-d/o.pull)+0.5;
+          const k = 1 - d/o.pull;                       // 0=范围边缘 1=球心
+          const f = o.pullForce*(k*k*1.6 + 0.7);        // 中距离也能明显拖人
           foe.x += dx/d*f;
-          foe.vx += dx/d*0.3;
+          foe.vx += dx/d*(0.25 + k*0.6);
+          if(foe.onGround) foe.vy = Math.min(foe.vy, -k*1.1);   // 被拽得脚离地（不叠加，不会飞走）
+          if(Math.random()<0.45)
+            spawnParticles(foe.x + dx/d*rand(10,50), foe.y-foe.h*0.5 + dy/d*rand(-20,20), 1, '#7fd0ff', 1.4, 12, 4, 0);
         }
       }
       // 把「赫」吸进引力 —— 己方的赫会被引力捕获并融合
@@ -1153,6 +1161,18 @@ function updateOrbs(){
           ring(o.x, o.y, '#5aa0ff', 170, 6);
           spawnParticles(o.x, o.y, 12, '#7fd0ff', 3, 22, 4, 0);
           shake = Math.max(shake, 5);
+        }
+      }
+      /* 苍打中敌人就掉血：飞行中撞上、或被引力吸进球心，都算命中（一颗球只打一次） */
+      if(!o.hitOnce && foe.hp>0 && foe.invul<=0){
+        const dd = Math.hypot(foe.x-o.x, (foe.y-foe.h*0.5)-o.y);
+        if(dd < (o.mode==='move'? 62 : 52)){
+          o.hitOnce = true;
+          damage(players[o.owner], foe, o.dmg, (foe.x>=o.x? 1:-1)*9, 5, 26, 'blue');
+          ring(o.x, o.y, '#7fd0ff', 135, 6);
+          spawnParticles(o.x, o.y, 18, '#9fd8ff', 7, 30, 5, 0.2);
+          shake = Math.max(shake, 8); hitStop = Math.max(hitStop, 4);
+          announce('苍 · 引 力 命 中', 30, '#5aa0ff');
         }
       }
       if(o.life<=0 || o.x<-80 || o.x>WORLD_W+80){
@@ -1320,7 +1340,11 @@ function trySkillsNaoya(p, k, K){
   }
   else if(K.punchP){
     consume(k.punch, k.punch2);
-    if(naoMul(p) >= NAO_CAP - 0.005){     // 移动蓄力已蓄满 → 普攻变成「突进一拳」
+    const foePin = players[1-p.id];
+    if(foePin.hp>0 && foePin.frozen>0 && foePin.frozenBy==='pin'){   // 对手被咒言钉住 → 处决演出「比肩」
+      p.state='naoExec'; p.stateT=0; p.atkHit=false;
+    }
+    else if(naoMul(p) >= NAO_CAP - 0.005){     // 移动蓄力已蓄满 → 普攻变成「突进一拳」
       p.state='naoRush'; p.stateT=0; p.atkHit=false;
       announce('変 則 · 突 進 拳', 44, '#a8d878', '蓄满后的普攻 —— 有 20% 概率骤现黑闪');
       ring(p.x, p.y-p.h*0.5, '#a8d878', 130, 5);
@@ -1941,7 +1965,10 @@ function updatePlayer(p, foe, k){
   if(p.char==='naoya'){
     const foeP = players[1-p.id];
     /* 记录 / 回溯 / 选择：对手被定格在画面里；但重演一开始他就解冻（1 秒的重演里双方是公平竞争） */
-    if(naoProjActive(p) && !p.naoReplay && foeP.hp>0 && !naoProjActive(foeP)) foeP.frozen = Math.max(foeP.frozen, 2);
+    if(naoProjActive(p) && !p.naoReplay && foeP.hp>0 && !naoProjActive(foeP)){
+      foeP.frozen = Math.max(foeP.frozen, 2);
+      if(foeP.frozenBy!=='pin') foeP.frozenBy = 'proj';    // 标记：这次定住是投射造成的（不是咒言钉住）
+    }
   }
   /* 投射咒法·记录：正常行动的同时每帧采集输入（记满即停） */
   if(p.naoRec && !p.naoRec.done) updateNaoRecord(p, K);
@@ -1951,7 +1978,7 @@ function updatePlayer(p, foe, k){
      否则它会被冻在 wsCharge 上再也不推进＝一直锁血 */
   const wsBusy = p.state==='wsCharge' || p.state==='wsSlash' || p.state==='wsOpen' || p.state==='wsBreak';
   if(p.frozen>0 && !wsBusy) p.state='frozen';
-  if(p.frozen<=0 && p.state==='frozen') p.state='idle';
+  if(p.frozen<=0){ p.frozenBy=null; if(p.state==='frozen') p.state='idle'; }
   p.blocking = K.down && p.onGround &&
     p.state!=='hollowCharge' && p.state!=='hollowFire' &&
     p.state!=='flameCharge' && p.state!=='grabbing' && p.state!=='grabStart';
@@ -2352,7 +2379,7 @@ function updatePlayer(p, foe, k){
     p.vx *= 0.7; p.blocking = false;
     p.frozen--;
     if(Math.random()<0.3) spawnParticles(p.x+rand(-24,24), p.y-rand(20,100), 1, '#ffd24a', 1.5, 16, 3, 0);
-    if(p.frozen<=0){ p.state='idle'; p.stateT=0; }
+    if(p.frozen<=0){ p.state='idle'; p.stateT=0; p.frozenBy=null; }
   }
   else if(p.state==='naoCmd'){                          // 咒言指令：突进触碰
     p.vx = p.facing*13; p.blocking = false;
@@ -2421,6 +2448,45 @@ function updatePlayer(p, foe, k){
       if(T>26){ p.state='idle'; p.atkHit=false; }       // 扑空：收招
     } else p.vx *= 0.7;                                 // 打中后的短暂后摇
     if(T>34){ p.state='idle'; p.atkHit=false; }
+  }
+  else if(p.state==='naoExec'){                         // 「比肩」处决：对手被咒言钉住时按普攻
+    const T = p.stateT;
+    p.vx = 0; p.blocking = false;
+    if(!execFx || execFx.owner!==p.id) execFx = { t:0, owner:p.id };   // 全屏演出接管画面
+    /* 演出期间对手保持被钉住（不许解冻反抓后摇） */
+    if(foe.hp>0 && foe.frozenBy==='pin') foe.frozen = Math.max(foe.frozen, 3);
+    /* 整段演出走慢动作：把突进 / 冲击 / 碎片 / 字幕每一拍都放慢，看得清 */
+    if(T<100) slowmo = Math.min(slowmo, NAO_EXEC_SLOW);
+    else { bfSlow = 0; slowmo = Math.min(1, slowmo + 0.05); }   // 收尾逐帧回速，击飞时已是常速
+    if(T===28 && !p.atkHit){                            // 拳到：只有画面冲击，伤害留到演出结束
+      p.atkHit = true;
+      /* 打击感：整页反白冲击帧（渲染侧）→ 定格（hitStop）→ 慢动作余韵 → 镜头怼近 */
+      flash = Math.max(flash, 0.45); shake = Math.max(shake, 34);
+      hitStop = Math.max(hitStop, 14); slowmo = 0.26; bfSlow = 24; zoom = Math.max(zoom, 1.20);
+      if(!execFx.shards){                               // 玻璃碎片：初速表（轨迹在渲染里解析）
+        execFx.shards = [];
+        for(let i=0;i<46;i++){
+          const an=rand(0,6.28318), sp=rand(2.4,13.5), n=4+Math.floor(rand(0,3));
+          const pts=[]; for(let j=0;j<n;j++) pts.push({ a:j*(6.28318/n)+rand(-0.32,0.32), k:rand(0.55,1.3) });
+          execFx.shards.push({ vx:Math.cos(an)*sp, vy:Math.sin(an)*sp-3.4, r:rand(5,16),
+            rot0:rand(0,6.28), vr:rand(-0.26,0.26), pts:pts,
+            dark: Math.random()<0.28 });
+        }
+      }
+    }
+    if(T===117 && p.atkHit){                            // 演出结束、直哉恢复行动的同一刻：才结算击飞
+      p.atkHit = false;
+      if(foe.hp>0){
+        const ay = foe.y - foe.h*0.55;
+        damage(p, foe, NAO_EXEC_DMG, p.facing*26, 14, 48, 'exec');
+        foe.frozen = 0; foe.frozenBy = null;            // 钉住解除，人被轰飞
+        ring(foe.x, ay, '#ffffff', 360, 12); ring(foe.x, ay, '#a8d878', 270, 8);
+        spawnParticles(foe.x, ay, 30, '#ffffff', 10, 38, 7, 0.2);
+        flash = Math.max(flash, 0.35); shake = Math.max(shake, 18);
+      } else { foe.frozen = 0; foe.frozenBy = null; }
+    }
+    if(execFx) execFx.t++;                              // 演出计时由逻辑帧驱动（渲染只读）
+    if(T>=118){ p.state='idle'; p.stateT=0; p.atkHit=false; execFx=null; }
   }
   /* ---------- 普通状态 ---------- */
   else {
@@ -3888,6 +3954,24 @@ function drawOrbs(t){
           ctx.strokeStyle='rgba(255,255,255,0.9)'; ctx.lineWidth=3;
           ctx.beginPath(); ctx.arc(o.x,o.y,o.r*2.6,0,7); ctx.stroke();
         }
+        /* 正在被拉住的敌人：画几条从身上被扯向球心的吸入线 */
+        const pin = players[1-o.owner];
+        if(pin && pin.hp>0){
+          const px = pin.x, py = pin.y - pin.h*0.5;
+          const pd = Math.hypot(px-o.x, py-o.y);
+          if(pd < o.pull){
+            const k2 = 1 - pd/o.pull;
+            ctx.strokeStyle = 'rgba(150,205,255,' + (0.25 + k2*0.55) + ')';
+            ctx.lineWidth = 1.5 + k2*1.5;
+            for(let i=0;i<5;i++){
+              const a2 = Math.PI*0.55 + i*0.22 + Math.sin(t*0.03+i)*0.05;
+              ctx.beginPath();
+              ctx.moveTo(px + Math.cos(a2)*22, py + Math.sin(a2)*16);
+              ctx.lineTo(o.x, o.y);
+              ctx.stroke();
+            }
+          }
+        }
       }
     } else {
       const g = ctx.createRadialGradient(o.x,o.y,2,o.x,o.y,o.r*2);
@@ -4171,39 +4255,30 @@ function drawTrainTip(){
 }
 /* ================= 直哉 UI：被动字幕 / 咒言指令 / 重现选择 / 漫画定格 ================= */
 /* 投射咒法：对手视角 —— 上方字幕「投 射 咒 法」+ 画面定格演出（黑边 / 被定格者框选） */
-let naoFreezeT = 0;
-function drawNaoFreeze(proj, foe, t){
-  naoFreezeT++;
-  const k = Math.min(1, naoFreezeT/8);                       // 淡入
+let naoFreezeT = 0;        // 投射定格：淡入计数
+let naoPinFreezeT = 0;     // 被咒言钉住：定格淡入计数
+
+/* 整屏「按下暂停键」：画面抽掉饱和度 + 扫描线 + 淡绿罩 + 电影黑边
+   —— 投射咒法 / 被投射指令钉住 共用同一套 */
+function drawPauseScreen(k){
   ctx.save();
-  ctx.globalCompositeOperation = 'saturation';               // 抽掉画面饱和度＝像按下了暂停键
+  ctx.globalCompositeOperation = 'saturation';
   ctx.fillStyle = '#808080'; ctx.globalAlpha = 0.8*k;
   ctx.fillRect(0, 0, W, H);
   ctx.restore();
-  ctx.fillStyle = 'rgba(120,205,120,'+(0.10*k)+')'; ctx.fillRect(0, 0, W, H);   // 淡绿：投射咒法的颜色
-  ctx.fillStyle = 'rgba(255,255,255,'+(0.05*k)+')';                             // 扫描线
+  ctx.fillStyle = 'rgba(120,205,120,'+(0.10*k)+')'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(255,255,255,'+(0.05*k)+')';
   for(let y = 0; y < H; y += 4) ctx.fillRect(0, y, W, 1);
   const bar = 32*k;
-  ctx.fillStyle = 'rgba(5,7,14,0.9)';                        // 电影黑边：画面像被按了暂停
+  ctx.fillStyle = 'rgba(5,7,14,0.9)';
   ctx.fillRect(0, 0, W, bar); ctx.fillRect(0, H-bar, W, bar);
   ctx.strokeStyle = 'rgba(168,216,120,'+(0.45*k)+')'; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(0,bar); ctx.lineTo(W,bar);
   ctx.moveTo(0,H-bar); ctx.lineTo(W,H-bar); ctx.stroke();
-  ctx.textAlign = 'center';
-  ctx.font = 'bold 30px "Microsoft YaHei", sans-serif';
-  ctx.strokeStyle = 'rgba(6,8,20,0.9)'; ctx.lineWidth = 5;
-  const s = '投 射 咒 法';
-  ctx.strokeText(s, W/2, bar + 42);
-  ctx.fillStyle = Math.sin(t/14)>0? '#ffffff' : '#a8d878';
-  ctx.fillText(s, W/2, bar + 42);
-  let ph = naoProjPhase(proj);
-  if(proj.naoRec) ph += '　' + (proj.naoRec.frames.length/60).toFixed(1) + 's / 3.0s';
-  ctx.font = 'bold 15px "Microsoft YaHei", sans-serif';
-  ctx.strokeStyle = 'rgba(6,8,20,0.85)'; ctx.lineWidth = 3.5;
-  ctx.strokeText(ph, W/2, bar + 64);
-  ctx.fillStyle = '#c8e8a0'; ctx.fillText(ph, W/2, bar + 64);
+}
+/* 被定格者：虚线框 + 四角取景标记 + 「定 格」 */
+function drawFreezeTarget(foe, k){
   if(!foe || foe.hp<=0) return;
-  /* 被定格在画面里的对手：虚线框 + 四角标记 + 「定 格」 */
   const sx = ((foe.x - camX) - W/2)*zoom + W/2, sy = (foe.y - H/2)*zoom + H/2;
   const bw = foe.w*zoom, bh = foe.h*zoom;
   ctx.save();
@@ -4216,11 +4291,361 @@ function drawNaoFreeze(proj, foe, t){
   for(const [px,py,dx,dy] of [[x0,y0,1,1],[x1,y0,-1,1],[x0,y1,1,-1],[x1,y1,-1,-1]]){
     ctx.beginPath(); ctx.moveTo(px+dx*c, py); ctx.lineTo(px, py); ctx.lineTo(px, py+dy*c); ctx.stroke();
   }
+  ctx.textAlign = 'center';
   ctx.font = 'bold 13px "Microsoft YaHei", sans-serif';
   ctx.strokeStyle = 'rgba(6,8,20,0.85)'; ctx.lineWidth = 3;
   ctx.strokeText('定 格', sx, y0-9);
   ctx.fillStyle = '#ffffff'; ctx.fillText('定 格', sx, y0-9);
   ctx.restore();
+}
+/* 只打一个「定 格」标签（投射时用：不再压灰画面、不加框） */
+function drawFreezeLabel(foe, k){
+  if(!foe || foe.hp<=0) return;
+  const sx = ((foe.x - camX) - W/2)*zoom + W/2, sy = (foe.y - H/2)*zoom + H/2;
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 15px "Microsoft YaHei", sans-serif';
+  ctx.strokeStyle = 'rgba(6,8,20,0.85)'; ctx.lineWidth = 3.5;
+  ctx.strokeText('定 格', sx, sy - foe.h*zoom - 26);
+  ctx.fillStyle = 'rgba(255,255,255,'+(0.95*k)+')';
+  ctx.fillText('定 格', sx, sy - foe.h*zoom - 26);
+  ctx.restore();
+}
+/* ============ 「比肩」处决演出：对手被咒言钉住时按普攻 ============ */
+let execFx = null;
+/* ── 漫画工具：网点 / 墨线 / 放射墨刺 ── */
+function mangaTone(x, y, w, h, gap, r, color, alpha){   // 半调网点（铺在当前 clip 内）
+  ctx.save();
+  ctx.fillStyle = color; ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  let row = 0;
+  for(let yy=y; yy<y+h; yy+=gap, row++){
+    const ox = (row%2)*gap*0.5;
+    for(let xx=x+ox; xx<x+w; xx+=gap){ ctx.moveTo(xx+r, yy); ctx.arc(xx, yy, r, 0, 6.2832); }
+  }
+  ctx.fill();
+  ctx.restore();
+}
+function inkStreak(x1,y1,x2,y2,w1,w2,color,alpha){      // 两端不等宽的墨线（速度线/拖尾）
+  const dx=x2-x1, dy=y2-y1, len=Math.hypot(dx,dy)||1;
+  const nx=-dy/len, ny=dx/len;
+  ctx.save();
+  ctx.globalAlpha *= (alpha===undefined?1:alpha);
+  ctx.fillStyle=color;
+  ctx.beginPath();
+  ctx.moveTo(x1+nx*w1,y1+ny*w1);
+  ctx.lineTo(x2+nx*w2,y2+ny*w2);
+  ctx.lineTo(x2-nx*w2,y2-ny*w2);
+  ctx.lineTo(x1-nx*w1,y1-ny*w1);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function inkBurst(cx, cy, rIn, rOut, n, squash){        // 放射墨刺：反白冲击帧的集中线
+  ctx.fillStyle='#0b0b10';
+  ctx.beginPath();
+  for(let i=0;i<n;i++){
+    const a0=(i/n)*6.2832-0.015, a1=((i+1)/n)*6.2832+0.015, am=(a0+a1)/2;
+    const tip = rIn + (i%2? rIn*0.32 : 0) + Math.sin(i*3.7)*22;
+    ctx.moveTo(cx+Math.cos(a0)*rOut, cy+Math.sin(a0)*rOut*squash);
+    ctx.lineTo(cx+Math.cos(am)*tip, cy+Math.sin(am)*tip*squash);
+    ctx.lineTo(cx+Math.cos(a1)*rOut, cy+Math.sin(a1)*rOut*squash);
+    ctx.closePath();
+  }
+  ctx.fill();
+}
+function drawExecNaoya(x, y, s, lean, flip, alpha){     // 直哉：漫画墨绘（后梳黑发 · 锐眼侧脸 · 弓步直拳）
+  const ink='#0b0b10', skin='#f2ddc0', hi='#f4f7ff';
+  ctx.save();
+  ctx.globalAlpha *= (alpha===undefined? 1 : alpha);
+  ctx.translate(x,y); ctx.rotate(lean);
+  if(flip) ctx.scale(-1,1);                         // 面朝左（向画面中心冲）
+  ctx.lineJoin='round'; ctx.lineCap='round';
+  /* ── 后腿蹬直拖在身后 ── */
+  ctx.strokeStyle=ink; ctx.lineWidth=15*s;
+  ctx.beginPath(); ctx.moveTo(-4*s,-6*s); ctx.quadraticCurveTo(-34*s,16*s,-60*s,42*s); ctx.stroke();
+  ctx.lineWidth=7*s;
+  ctx.beginPath(); ctx.moveTo(-60*s,42*s); ctx.lineTo(-74*s,38*s); ctx.stroke();
+  /* ── 前腿弓步 ── */
+  ctx.lineWidth=15*s;
+  ctx.beginPath(); ctx.moveTo(4*s,-4*s); ctx.quadraticCurveTo(24*s,22*s,36*s,50*s); ctx.stroke();
+  ctx.lineWidth=7*s;
+  ctx.beginPath(); ctx.moveTo(36*s,50*s); ctx.lineTo(50*s,46*s); ctx.stroke();
+  /* ── 躯干（黑色窄袖羽织，前倾压低） ── */
+  ctx.fillStyle=ink;
+  ctx.beginPath();
+  ctx.moveTo(-24*s,-46*s);
+  ctx.quadraticCurveTo(-2*s,-56*s, 20*s,-48*s);
+  ctx.quadraticCurveTo(26*s,-14*s, 10*s,12*s);
+  ctx.lineTo(-14*s,12*s);
+  ctx.quadraticCurveTo(-30*s,-16*s,-24*s,-46*s);
+  ctx.closePath(); ctx.fill();
+  ctx.save(); ctx.clip();                            // 黑底铺白点网点：印刷质感（细密、含蓄）
+  mangaTone(-30*s,-58*s,60*s,74*s, 5*s, 0.9*s, '#ffffff', 0.14);
+  ctx.restore();
+  /* ── 衣摆向后掀 ── */
+  ctx.beginPath();
+  ctx.moveTo(8*s,10*s);
+  ctx.quadraticCurveTo(-14*s,44*s,-46*s,32*s);
+  ctx.quadraticCurveTo(-24*s,20*s,-16*s,10*s);
+  ctx.closePath(); ctx.fill();
+  /* ── 后臂收在肋侧 ── */
+  ctx.strokeStyle=ink; ctx.lineWidth=10*s;
+  ctx.beginPath(); ctx.moveTo(-14*s,-38*s); ctx.quadraticCurveTo(-4*s,-22*s,6*s,-16*s); ctx.stroke();
+  /* ── 出拳的前臂（与肩同高） ── */
+  ctx.lineWidth=13*s;
+  ctx.beginPath(); ctx.moveTo(10*s,-46*s); ctx.lineTo(48*s,-50*s); ctx.stroke();
+  ctx.lineWidth=10*s;
+  ctx.beginPath(); ctx.moveTo(40*s,-50*s); ctx.lineTo(60*s,-52*s); ctx.stroke();
+  /* 拳 */
+  ctx.fillStyle=skin;
+  ctx.beginPath(); ctx.ellipse(66*s,-52*s,12.5*s,11*s,-0.2,0,7); ctx.fill();
+  ctx.strokeStyle=ink; ctx.lineWidth=2.4*s;
+  ctx.beginPath(); ctx.ellipse(66*s,-52*s,12.5*s,11*s,-0.2,0,7); ctx.stroke();
+  /* 漫画留白高光：肩线 + 拳上破风线 */
+  ctx.strokeStyle=hi; ctx.lineWidth=2.6*s;
+  ctx.beginPath(); ctx.moveTo(-22*s,-44*s); ctx.quadraticCurveTo(-4*s,-52*s, 16*s,-45*s); ctx.stroke();
+  inkStreak(58*s,-60*s, 112*s,-64*s, 1.2*s, 0.4*s, hi, 0.85);
+  /* ── 头：侧脸（尖鼻 · 锐眼 · 咬牙）+ 后梳黑发 ── */
+  ctx.fillStyle=ink; ctx.fillRect(-6*s,-56*s,10*s,10*s);   // 颈
+  ctx.fillStyle=skin;
+  ctx.beginPath();
+  ctx.moveTo(10*s,-76*s);                                 // 额头
+  ctx.quadraticCurveTo(20*s,-74*s, 24*s,-68*s);           // 鼻梁
+  ctx.lineTo(27*s,-64*s);                                 // 鼻尖
+  ctx.lineTo(21*s,-62*s);
+  ctx.quadraticCurveTo(22*s,-57*s, 16*s,-53*s);           // 人中
+  ctx.lineTo(20*s,-50*s);                                 // 下巴尖
+  ctx.quadraticCurveTo(10*s,-44*s, 2*s,-46*s);            // 下颌
+  ctx.quadraticCurveTo(-8*s,-54*s,-2*s,-72*s);            // 腮
+  ctx.quadraticCurveTo(2*s,-78*s,10*s,-76*s);
+  ctx.closePath(); ctx.fill();
+  /* 锐眼：白眼裂 + 黑瞳（内眼角压低） */
+  ctx.fillStyle='#ffffff';
+  ctx.beginPath();
+  ctx.moveTo(8*s,-68*s); ctx.lineTo(19*s,-69.5*s); ctx.lineTo(18*s,-65.5*s); ctx.lineTo(9*s,-65*s);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle=ink;
+  ctx.fillRect(14*s,-69*s, 3.4*s, 3.6*s);
+  /* 怒眉：向鼻梁压 */
+  ctx.strokeStyle=ink; ctx.lineWidth=3.4*s;
+  ctx.beginPath(); ctx.moveTo(7*s,-73*s); ctx.lineTo(19*s,-71*s); ctx.stroke();
+  /* 咬紧的嘴 */
+  ctx.strokeStyle=ink; ctx.lineWidth=2*s;
+  ctx.beginPath(); ctx.moveTo(16*s,-56*s); ctx.lineTo(21.5*s,-56.5*s); ctx.stroke();
+  /* 后梳黑发：尖刺全部向后飞（被风掀起来） */
+  ctx.fillStyle=ink;
+  ctx.beginPath();
+  ctx.moveTo(12*s,-76*s);
+  const hair=[[14,-84],[2,-88],[-10,-86],[-6,-80],[-22,-84],[-34,-76],[-24,-70],[-38,-66],[-28,-60],[-16,-64],[-4,-62],[-2,-72]];
+  for(const [hx,hy] of hair) ctx.lineTo(hx*s, hy*s);
+  ctx.closePath(); ctx.fill();
+  /* 发上留白高光弧 */
+  ctx.strokeStyle=hi; ctx.lineWidth=2.2*s;
+  ctx.beginPath(); ctx.moveTo(8*s,-80*s); ctx.quadraticCurveTo(-8*s,-82*s,-20*s,-74*s); ctx.stroke();
+  ctx.restore();
+}
+/* 拳头特写：漫画风 —— 白底 + 粗墨轮廓 + 网点阴影 */
+function drawExecFist(x, y, r, a){
+  ctx.save(); ctx.globalAlpha=a;
+  /* 前臂：粗墨轮廓 + 白底 + 网点（透视插进画面） */
+  ctx.beginPath();
+  ctx.moveTo(x+r*1.02, y+r*0.62);
+  ctx.lineTo(W+80, y+r*3.1);
+  ctx.lineTo(W+80, y+r*5.6);
+  ctx.lineTo(x+r*0.96, y+r*1.28);
+  ctx.closePath();
+  ctx.fillStyle='#ffffff'; ctx.fill();
+  ctx.strokeStyle='#0b0b10'; ctx.lineWidth=7; ctx.stroke();
+  ctx.save(); ctx.clip();
+  mangaTone(x, y+r*0.7, W-x, r*5.2, 11, 2.2, '#0b0b10', 0.24);
+  ctx.restore();
+  /* 拳：白底 + 8px 墨边 + 下侧网点 */
+  ctx.beginPath(); ctx.ellipse(x, y, r*0.98, r*1.04, -0.16, 0, 7);
+  ctx.fillStyle='#ffffff'; ctx.fill();
+  ctx.strokeStyle='#0b0b10'; ctx.lineWidth=8; ctx.stroke();
+  ctx.save(); ctx.clip();
+  mangaTone(x-r, y+r*0.1, r*2.1, r*1.3, 7, 1.7, '#0b0b10', 0.32);
+  ctx.restore();
+  /* 指节缝：三道弧 */
+  ctx.strokeStyle='#0b0b10'; ctx.lineWidth=5.5;
+  for(let i=0;i<3;i++){
+    ctx.beginPath();
+    ctx.arc(x-r*0.06, y-r*0.2, r*(0.62-i*0.13), -0.5, 0.8);
+    ctx.stroke();
+  }
+  /* 拇指 */
+  ctx.beginPath(); ctx.ellipse(x-r*0.58, y+r*0.58, r*0.22, r*0.14, 0.6, 0, 7);
+  ctx.fillStyle='#ffffff'; ctx.fill();
+  ctx.lineWidth=5; ctx.stroke();
+  /* 腕褶 */
+  ctx.strokeStyle='#0b0b10'; ctx.lineWidth=4;
+  ctx.beginPath(); ctx.arc(x+r*0.85, y+r*0.75, r*0.5, 2.2, 3.6); ctx.stroke();
+  ctx.restore();
+}
+function drawNaoExecFX(){
+  if(!execFx) return;
+  const e = execFx;
+  const T = e.t;
+  const HIT = 28;                                       // 命中帧（与逻辑同步）
+  if(T>200){ execFx=null; return; }
+  const inA  = Math.min(1, T/8);
+  const since = T-HIT;                                  // 命中后经过的帧数
+  const fx = W*0.58, fy = H*0.52;                       // 拳心（构图点）
+  if(since<0){
+    /* ═══ 冲刺段（夜色）：白色破风线 + 直哉压进 + 眼神特写分格 ═══ */
+    const a = inA;
+    ctx.fillStyle='rgba(3,5,9,'+(0.94*a)+')'; ctx.fillRect(0,0,W,H);
+    for(let i=0;i<7;i++){                               // 白色拖尾（向右散去）
+      const ly = H*0.16+i*H*0.11;
+      const lx = W - ((T*46 + i*210)%(W+520));
+      inkStreak(lx, ly, lx+320+i*40, ly+12, 7-i*0.7, 0.5, '#eef4ee', a*(0.5-(i%3)*0.12));
+    }
+    ctx.strokeStyle='rgba(225,240,225,'+(0.5*a)+')'; ctx.lineWidth=2;
+    for(let i=0;i<10;i++){                              // 细速度线
+      const ly=(i*83+T*7)%H, lx=W-((T*30+i*130)%(W+300));
+      ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(lx+180,ly+6); ctx.stroke();
+    }
+    if(T>=5){                                           // 直哉冲刺（7 层残影）
+      const pr = clamp((T-5)/(HIT-5), 0, 1);
+      const ease = pr*pr*(3-2*pr);                      // 越冲越快
+      const ex = W*1.25 - ease*(W*0.85), ey = H*0.60 - ease*(H*0.10);
+      for(let i=7;i>=1;i--) drawExecNaoya(ex+i*50*(1+0.1*i), ey+i*6, 2.3, -0.40, true, a*0.08*(1-i/8));
+      drawExecNaoya(ex, ey, 2.3, -0.40, true, a);
+    }
+    if(T>=8){                                           // 眼神特写：漫画分格（白框黑底）
+      const pop = Math.min(1,(T-8)/3);
+      const pw = 400, ph = 215;
+      ctx.save();
+      ctx.translate(W*0.10+pw/2, H*0.15+ph/2);
+      ctx.scale(0.6+0.4*pop, 0.6+0.4*pop); ctx.rotate(-0.03);
+      ctx.translate(-pw/2, -ph/2);
+      ctx.fillStyle='#0b0b10'; ctx.fillRect(0,0,pw,ph);
+      ctx.strokeStyle='#f4f7ff'; ctx.lineWidth=7; ctx.strokeRect(3.5,3.5,pw-7,ph-7);
+      const ecx=pw*0.52, ecy=ph*0.55;
+      ctx.fillStyle='#ffffff';
+      ctx.beginPath(); ctx.ellipse(ecx,ecy, 95, 40, -0.06, 0, 7); ctx.fill();  // 眼白
+      ctx.fillStyle='#0b0b10';
+      ctx.beginPath(); ctx.arc(ecx-12, ecy+2, 24, 0, 7); ctx.fill();           // 瞳
+      ctx.fillStyle='#ffffff';
+      ctx.beginPath(); ctx.arc(ecx-18, ecy-6, 6, 0, 7); ctx.fill();            // 高光
+      ctx.fillStyle='#0b0b10';                                                 // 压低的上眼睑
+      ctx.beginPath();
+      ctx.moveTo(ecx-100, ecy-44);
+      ctx.quadraticCurveTo(ecx, ecy-62, ecx+100, ecy-38);
+      ctx.lineTo(ecx+100, ecy-95); ctx.lineTo(ecx-100, ecy-95);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle='#f4f7ff'; ctx.lineWidth=9; ctx.lineCap='round';         // 眉
+      ctx.beginPath(); ctx.moveTo(ecx-70, ecy-54); ctx.lineTo(ecx+62, ecy-38); ctx.stroke();
+      ctx.lineWidth=3;                                                         // 外眼角怒线
+      for(let i=0;i<5;i++){
+        const an=-0.5+i*0.22;
+        ctx.beginPath();
+        ctx.moveTo(ecx+92+Math.cos(an)*26, ecy-8+Math.sin(an)*26);
+        ctx.lineTo(ecx+92+Math.cos(an)*54, ecy-8+Math.sin(an)*54);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  } else {
+    /* ═══ 命中后：整页反转成「白纸黑墨」的漫画冲击页 ═══ */
+    const outA = T>98? Math.max(0,(118-T)/20) : 1;
+    const a = inA*outA;
+    ctx.fillStyle='rgba(250,250,246,'+(0.97*a)+')'; ctx.fillRect(0,0,W,H);
+    ctx.save(); ctx.globalAlpha=a;
+    inkBurst(fx, fy, 250+since*2.4, 1500, 34, 0.72);    // 集中线：从四边收向拳心
+    ctx.restore();
+    /* 拳头特写（白底墨边 + 网点） */
+    const k = Math.min(1,(T-(HIT-1))/2);
+    const pop = 1 + 0.10*Math.max(0, 1-since/7);
+    const r = 92*k*pop;
+    drawExecFist(fx - (1-k)*170, fy, r, a);
+    /* 玻璃碎片：白底墨边的硬朗碎片 + 十字星芒 */
+    if(e.shards){
+      for(const s of e.shards){
+        const px = fx + s.vx*since;
+        const py = fy + s.vy*since + 0.11*since*since;
+        const rot = s.rot0 + s.vr*since;
+        const al = a*Math.max(0, 1-since/70);
+        if(al<=0.02) continue;
+        ctx.save(); ctx.translate(px,py); ctx.rotate(rot); ctx.globalAlpha=al;
+        ctx.beginPath();
+        for(let i=0;i<s.pts.length;i++){
+          const pt=s.pts[i], rr=s.r*pt.k;
+          const xx=Math.cos(pt.a)*rr, yy=Math.sin(pt.a)*rr;
+          i? ctx.lineTo(xx,yy) : ctx.moveTo(xx,yy);
+        }
+        ctx.closePath();
+        ctx.fillStyle = s.dark? '#0b0b10' : '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle='#0b0b10'; ctx.lineWidth=2.6; ctx.stroke();
+        ctx.restore();
+      }
+      for(let i=0;i<6;i++){                             // 星芒（漫画十字闪）
+        const sa = Math.max(0, 1-since/26)*a;
+        if(sa<=0) continue;
+        const sx2 = fx+Math.cos(i*1.05+0.7)*(150+since*9);
+        const sy2 = fy+Math.sin(i*1.05+0.7)*(120+since*7);
+        const L = 26+((i*29)%14);
+        ctx.strokeStyle='rgba(11,11,16,'+sa+')'; ctx.lineWidth=5;
+        ctx.beginPath();
+        ctx.moveTo(sx2-L,sy2); ctx.lineTo(sx2+L,sy2);
+        ctx.moveTo(sx2,sy2-L); ctx.lineTo(sx2,sy2+L);
+        ctx.stroke();
+      }
+    }
+    /* 台词：粗墨手写体逐字砸落（手绘歪斜 + 最后一个字朱红） */
+    if(T>=HIT+3){
+      const chars='要和他比肩的是我';
+      const n = Math.min(chars.length, Math.floor((T-(HIT+3))/3)+1);
+      const cw = 64, x0 = W/2-(chars.length-1)*cw/2, by = H*0.86;
+      ctx.save();
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      for(let i=0;i<n;i++){
+        const ap = clamp((T-(HIT+3)-i*3)/3, 0, 1);
+        if(ap<=0) continue;
+        const sc = 1 + 0.6*(1-ap);                      // 由大砸落：打点感
+        ctx.save();
+        ctx.translate(x0+i*cw, by+Math.sin(i*1.3)*5);
+        ctx.rotate(Math.sin(i*2.1)*0.05);               // 手绘歪斜
+        ctx.scale(sc,sc);
+        ctx.globalAlpha = a*ap;
+        ctx.font='900 58px "Microsoft YaHei", sans-serif';
+        ctx.strokeStyle='#f7f7f2'; ctx.lineWidth=8;
+        ctx.strokeText(chars[i], 0, 0);
+        ctx.fillStyle = i===chars.length-1? '#b4141e' : '#0b0b10';
+        ctx.fillText(chars[i], 0, 0);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+    /* 收尾：黑墨斜切带扫过（漫画翻页） */
+    if(T>100 && T<118){
+      const w = (T-100)/18;
+      ctx.save(); ctx.globalAlpha=a; ctx.translate(W/2,H/2); ctx.rotate(-0.20);
+      ctx.fillStyle='#0b0b10';
+      ctx.fillRect(-W, -H*0.3 + w*H*1.7, W*3, 54);
+      ctx.restore();
+    }
+  }
+}
+function drawNaoFreeze(proj, foe, t){
+  naoFreezeT++;
+  const k = Math.min(1, naoFreezeT/8);
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 30px "Microsoft YaHei", sans-serif';
+  ctx.strokeStyle = 'rgba(6,8,20,0.9)'; ctx.lineWidth = 5;
+  const s = '投 射 咒 法';
+  ctx.strokeText(s, W/2, 106);
+  ctx.fillStyle = Math.sin(t/14)>0? '#ffffff' : '#a8d878';
+  ctx.fillText(s, W/2, 106);
+  let ph = naoProjPhase(proj);
+  if(proj.naoRec) ph += '　' + (proj.naoRec.frames.length/60).toFixed(1) + 's / 3.0s';
+  ctx.font = 'bold 15px "Microsoft YaHei", sans-serif';
+  ctx.strokeStyle = 'rgba(6,8,20,0.85)'; ctx.lineWidth = 3.5;
+  ctx.strokeText(ph, W/2, 130);
+  ctx.fillStyle = '#c8e8a0'; ctx.fillText(ph, W/2, 130);
+  /* 对手身上只留「定 格」两个字（整屏压灰 / 黑边 / 取景框已经搬到「被投射指令钉住」那边） */
+  if(foe && foe.frozenBy !== 'pin') drawFreezeLabel(foe, k);
 }
 function drawNaoUI(t){
   if(state!=='fight' && state!=='ko') return;
@@ -4230,8 +4655,16 @@ function drawNaoUI(t){
   const proj = players.find(p=> p.char==='naoya' && naoProjActive(p) && !p.naoReplay);
   const frozenFoe = proj? players[1-proj.id] : null;
   if(proj) drawNaoFreeze(proj, frozenFoe, t); else naoFreezeT = 0;
-  /* 被动字幕：屏幕上方 —— 移动蓄力倍率（投射时下移，给上方字幕让位） */
-  const subY = proj? 122 : 58;
+  /* 被投射指令钉住（咒言）：播放和投射同款的整屏定格演出 */
+  const pinned = players.find(p=> p.hp>0 && p.frozen>0 && p.frozenBy==='pin');
+  if(pinned){
+    naoPinFreezeT++;
+    const kp = Math.min(1, naoPinFreezeT/8);
+    drawPauseScreen(kp);
+    drawFreezeTarget(pinned, kp);
+  } else naoPinFreezeT = 0;
+  /* 被动字幕：屏幕上方 —— 移动蓄力倍率（投射 / 钉住时下移，给上方字幕让位） */
+  const subY = (proj || pinned)? 152 : 58;
   players.forEach(p=>{
     if(p.char!=='naoya') return;
     const both = players[1-p.id].char==='naoya';
@@ -4302,6 +4735,8 @@ function drawNaoUI(t){
       ctx.globalAlpha=1;
     }
   }
+  /* 「比肩」处决演出：全屏接管（画在最上层） */
+  drawNaoExecFX();
 }
 function drawSkillBars(){
   if(typeof touchOn !== 'undefined' && touchOn) return;   // 开着触屏按钮就不画键位条
@@ -6577,6 +7012,7 @@ function loop(now){
       zx = clamp(p.x - camX, 0, W); zy = clamp(p.y - p.h*0.55, 0, H);
     }
   }
+  if(execFx){ zx = W*0.58; zy = H*0.52; }              // 「比肩」处决：镜头怼向拳心
 
   if(state!=='title'){
     const mid = (players[0].x+players[1].x)/2;
